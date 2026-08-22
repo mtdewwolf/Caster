@@ -95,3 +95,16 @@ export interface ScanStatus {
   currentFile: string;
   errors: string[];
 }
+
+export interface FilesystemEntry {
+  name: string;
+  path: string;
+  hasMedia: boolean;
+}
+
+export interface BrowseResult {
+  isRoot: boolean;
+  current: string;
+  parent: string | null;
+  entries: FilesystemEntry[];
+}

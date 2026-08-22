@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { initDatabase } from './db';
 import { apiRouter } from './routes/api';
+import { fsRouter } from './routes/fs';
 import { transcoder } from './transcoder/engine';
 
 // Initialize SQLite database
@@ -22,6 +23,9 @@ app.use('*', cors({
 
 // Mount API router
 app.route('/api', apiRouter);
+
+// Filesystem browsing & media folder auto-detection
+app.route('/api/fs', fsRouter);
 
 // Health check endpoint
 app.get('/health', (c) => c.json({

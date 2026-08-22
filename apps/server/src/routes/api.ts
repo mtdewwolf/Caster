@@ -221,9 +221,9 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
     return c.text('Media not found', 404);
   }
 
-  try {
-    const chunkBuffer = await transcoder.getHlsSegment(item.full_path, id, quality, seq);
-    return new Response(chunkBuffer, {
+    try {
+      const chunkBuffer = await transcoder.getHlsSegment(item.full_path, id, quality, seq);
+      return new Response(new Uint8Array(chunkBuffer), {
       headers: {
         'Content-Type': 'video/mp2t',
         'Cache-Control': 'public, max-age=86400'
