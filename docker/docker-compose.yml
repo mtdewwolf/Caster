@@ -1,0 +1,45 @@
+services:
+  novastream:
+    container_name: novastream
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: novastream:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - MEDIA_DATA_DIR=/app/data
+      - THUMBNAILS_DIR=/app/data/thumbnails
+      - TRANSCODE_CACHE_DIR=/app/data/transcode_cache
+      # Set timezone matching your TrueNAS SCALE host
+      - TZ=America/New_York
+    volumes:
+      # Persistent app data, database, posters, and transcoder cache
+      - /mnt/tank/appdata/novastream/data:/app/data
+      # Your TrueNAS ZFS media pool (Read-Only)
+      - /mnt/tank/media:/media:ro
+    
+    # ----------------------------------------------------
+    # Hardware Acceleration for TrueNAS SCALE
+    # ----------------------------------------------------
+    # For Intel QuickSync & AMD VAAPI (Integrated Graphics):
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44" # Video group ID (typical on Debian/TrueNAS)
+      - "107" # Render group ID
+
+    # For NVIDIA GPU (Uncomment if using an NVIDIA card in TrueNAS SCALE):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, video]
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=all,video,compute,utility

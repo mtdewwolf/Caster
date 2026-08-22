@@ -1,0 +1,45 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale-media
+    hostname: novastream-nas
+    restart: unless-stopped
+    environment:
+      # Obtain an auth key from https://login.tailscale.com/admin/settings/keys
+      - TS_AUTHKEY=${TS_AUTHKEY:-tskey-auth-YOUR-KEY-HERE}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_EXTRA_ARGS=--accept-routes
+    volumes:
+      - /mnt/tank/appdata/tailscale/state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+
+  novastream:
+    container_name: novastream
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: novastream:latest
+    restart: unless-stopped
+    # Attach NovaStream directly into the Tailscale network namespace
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - MEDIA_DATA_DIR=/app/data
+      - THUMBNAILS_DIR=/app/data/thumbnails
+      - TRANSCODE_CACHE_DIR=/app/data/transcode_cache
+      - TZ=America/New_York
+    volumes:
+      - /mnt/tank/appdata/novastream/data:/app/data
+      - /mnt/tank/media:/media:ro
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"
+      - "107"

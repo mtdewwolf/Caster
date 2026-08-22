@@ -1,0 +1,21 @@
+{
+  "name": "caster",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '@caster/server' dev",
+    "dev:server": "bun run --filter '@caster/server' dev",
+    "dev:web": "bun run --filter '@caster/web' dev",
+    "build": "bun run --filter '@caster/web' build",
+    "start": "bun run --filter '@caster/server' start",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  }
+}
