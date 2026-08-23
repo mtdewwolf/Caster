@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { LibraryModel, MediaModel, ProgressModel } from '../db';
@@ -8,6 +9,256 @@ import { transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 
 export const apiRouter = new Hono();
+
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso'
+]);
+const AUDIO_EXTENSIONS = new Set([
+  '.mp3', '.flac', '.aac', '.m4a', '.wav', '.ogg', '.opus', '.wma', '.alac'
+]);
+const SKIP_DIRECTORY_NAMES = new Set([
+  'node_modules',
+  '@eaDir',
+  '#recycle',
+  '$RECYCLE.BIN',
+  'System Volume Information',
+  'lost+found',
+  '.snapshots',
+  '.git',
+  'Windows',
+  'Program Files',
+  'Program Files (x86)',
+  'ProgramData',
+  'AppData'
+]);
+const SUGGEST_SCAN_DEPTH = 3;
+const SUGGEST_MAX_DIRECTORIES = 800;
+const SUGGEST_MAX_RESULTS = 24;
+
+type LibraryType = 'movies' | 'tv' | 'music' | 'home_videos';
+
+interface FilesystemEntry {
+  name: string;
+  path: string;
+  hasMedia: boolean;
+}
+
+interface FolderSuggestion {
+  path: string;
+  name: string;
+  type: LibraryType;
+  mediaFileCount: number;
+  alreadyAdded: boolean;
+}
+
+function isMediaFile(fileName: string): boolean {
+  const extension = path.extname(fileName).toLowerCase();
+  return VIDEO_EXTENSIONS.has(extension) || AUDIO_EXTENSIONS.has(extension);
+}
+
+function shouldSkipDirectory(name: string): boolean {
+  return name.startsWith('.') || SKIP_DIRECTORY_NAMES.has(name);
+}
+
+function safeReadDirectory(directoryPath: string): fs.Dirent[] | null {
+  try {
+    return fs.readdirSync(directoryPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+}
+
+function normalizeExistingDirectory(requestedPath: string): string | null {
+  try {
+    const resolved = path.resolve(requestedPath);
+    return fs.statSync(resolved).isDirectory() ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function listDriveRoots(): string[] {
+  if (process.platform !== 'win32') return ['/'];
+
+  const drives: string[] = [];
+  for (let charCode = 65; charCode <= 90; charCode += 1) {
+    const drive = `${String.fromCharCode(charCode)}:\\`;
+    try {
+      if (fs.statSync(drive).isDirectory()) drives.push(drive);
+    } catch {
+      // Missing and inaccessible drives are intentionally omitted.
+    }
+  }
+  return drives;
+}
+
+function directoryHasMedia(directoryPath: string): boolean {
+  const entries = safeReadDirectory(directoryPath);
+  return entries?.some((entry) => entry.isFile() && isMediaFile(entry.name)) ?? false;
+}
+
+function getSuggestionRoots(): string[] {
+  const candidates = process.platform === 'win32'
+    ? listDriveRoots()
+    : [
+        '/media',
+        '/mnt',
+        '/data',
+        '/srv',
+        '/volume1',
+        '/volume2',
+        path.join(os.homedir(), 'Movies'),
+        path.join(os.homedir(), 'TV'),
+        path.join(os.homedir(), 'Music'),
+        path.join(os.homedir(), 'Videos')
+      ];
+
+  const roots = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = normalizeExistingDirectory(candidate);
+    if (normalized) roots.add(normalized);
+  }
+  return [...roots];
+}
+
+function looksLikeEpisode(fileName: string): boolean {
+  return /s\d{1,2}\s?[._ -]?e\d{1,3}/i.test(fileName) || /\d{1,2}x\d{2}\b/i.test(fileName);
+}
+
+function detectLibraryType(mediaFiles: string[]): LibraryType {
+  let audioCount = 0;
+  let videoCount = 0;
+  let episodeCount = 0;
+
+  for (const fileName of mediaFiles) {
+    const extension = path.extname(fileName).toLowerCase();
+    if (AUDIO_EXTENSIONS.has(extension)) audioCount += 1;
+    if (VIDEO_EXTENSIONS.has(extension)) videoCount += 1;
+    if (looksLikeEpisode(fileName)) episodeCount += 1;
+  }
+
+  if (audioCount > videoCount) return 'music';
+  if (episodeCount > 0) return 'tv';
+  return 'movies';
+}
+
+function collectFolderSuggestions(): FolderSuggestion[] {
+  const existingLibraries = LibraryModel.getAll().map((library) => path.resolve(library.path));
+  const pathMatches = (left: string, right: string) => process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+
+  const queue = getSuggestionRoots().map((directoryPath) => ({ directoryPath, depth: 0 }));
+  const visited = new Set<string>();
+  const found = new Map<string, { count: number; samples: string[] }>();
+  let scannedDirectories = 0;
+
+  while (queue.length > 0 && scannedDirectories < SUGGEST_MAX_DIRECTORIES) {
+    const next = queue.shift()!;
+    const directoryPath = path.resolve(next.directoryPath);
+    if (visited.has(directoryPath)) continue;
+    visited.add(directoryPath);
+    scannedDirectories += 1;
+
+    const entries = safeReadDirectory(directoryPath);
+    if (!entries) continue;
+
+    const mediaFiles: string[] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory() && !shouldSkipDirectory(entry.name)) {
+        if (next.depth < SUGGEST_SCAN_DEPTH) {
+          queue.push({ directoryPath: path.join(directoryPath, entry.name), depth: next.depth + 1 });
+        }
+      } else if (entry.isFile() && isMediaFile(entry.name)) {
+        mediaFiles.push(entry.name);
+      }
+    }
+
+    if (mediaFiles.length > 0) {
+      found.set(directoryPath, {
+        count: mediaFiles.length,
+        samples: mediaFiles.slice(0, 12)
+      });
+    }
+  }
+
+  return [...found.entries()]
+    .map(([directoryPath, media]) => ({
+      path: directoryPath,
+      name: path.basename(directoryPath) || directoryPath,
+      type: detectLibraryType(media.samples),
+      mediaFileCount: media.count,
+      alreadyAdded: existingLibraries.some((libraryPath) => pathMatches(libraryPath, directoryPath))
+    }))
+    .sort((left, right) => right.mediaFileCount - left.mediaFileCount || left.name.localeCompare(right.name))
+    .slice(0, SUGGEST_MAX_RESULTS);
+}
+
+// ---------------- Filesystem Browser API ---------------- //
+
+apiRouter.get('/fs/browse', (c) => {
+  const requestedPath = c.req.query('path');
+
+  if (!requestedPath?.trim()) {
+    const entries: FilesystemEntry[] = listDriveRoots().map((root) => ({
+      name: root,
+      path: root,
+      hasMedia: false
+    }));
+
+    if (process.platform !== 'win32') {
+      for (const directoryPath of getSuggestionRoots()) {
+        if (entries.some((entry) => entry.path === directoryPath)) continue;
+        entries.push({
+          name: path.basename(directoryPath) || directoryPath,
+          path: directoryPath,
+          hasMedia: directoryHasMedia(directoryPath)
+        });
+      }
+    }
+
+    return c.json({ isRoot: true, current: '', parent: null, entries });
+  }
+
+  const current = normalizeExistingDirectory(requestedPath);
+  if (!current) {
+    return c.json({ error: 'Path not found or not accessible' }, 404);
+  }
+
+  const directoryEntries = safeReadDirectory(current);
+  if (!directoryEntries) {
+    return c.json({ error: 'Path not found or not accessible' }, 404);
+  }
+
+  const entries: FilesystemEntry[] = directoryEntries
+    .filter((entry) => entry.isDirectory() && !shouldSkipDirectory(entry.name))
+    .map((entry) => {
+      const entryPath = path.join(current, entry.name);
+      return {
+        name: entry.name,
+        path: entryPath,
+        hasMedia: directoryHasMedia(entryPath)
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const parent = path.dirname(current);
+
+  return c.json({
+    isRoot: false,
+    current,
+    parent: parent === current ? null : parent,
+    entries
+  });
+});
+
+apiRouter.get('/fs/suggest', (c) => {
+  try {
+    return c.json({ suggestions: collectFolderSuggestions() });
+  } catch (error) {
+    console.error('Failed to suggest media folders:', error);
+    return c.json({ suggestions: [] });
+  }
+});
 
 // ---------------- Libraries API ---------------- //
 
