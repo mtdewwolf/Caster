@@ -1,7 +1,7 @@
 import { spawn, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import type { HardwareAccelType, QualityProfile, SystemHardwareStatus, TranscodeQuality } from '../types';
+import type { CacheCleanResult, HardwareAccelType, QualityProfile, SystemHardwareStatus, TranscodeCacheStatus, TranscodeQuality } from '../types';
 
 export const QUALITY_PROFILES: Record<TranscodeQuality, QualityProfile> = {
   original: {
@@ -52,7 +52,9 @@ export const QUALITY_PROFILES: Record<TranscodeQuality, QualityProfile> = {
 };
 
 const HLS_SEGMENT_DURATION = 6; // 6 seconds per segment
-const TRANSCODE_CACHE_DIR = process.env.TRANSCODE_CACHE_DIR || path.join(process.cwd(), 'data', 'transcode_cache');
+export const TRANSCODE_CACHE_DIR = process.env.TRANSCODE_CACHE_DIR || path.join(process.cwd(), 'data', 'transcode_cache');
+export const TRANSCODE_CACHE_MAX_AGE_HOURS = parseInt(process.env.TRANSCODE_CACHE_MAX_AGE_HOURS || '24', 10);
+export const TRANSCODE_CACHE_MAX_SIZE_MB = parseInt(process.env.TRANSCODE_CACHE_MAX_SIZE_MB || '10000', 10); // 10 GB
 
 if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
   fs.mkdirSync(TRANSCODE_CACHE_DIR, { recursive: true });
@@ -61,9 +63,31 @@ if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
 class TranscodingEngine {
   private activeJobs = 0;
   private hardwareStatus: SystemHardwareStatus | null = null;
+  private cleanupTimer: any = null;
 
   constructor() {
     this.detectHardware();
+
+    // Run initial startup cleanup asynchronously after brief delay
+    setTimeout(() => {
+      try {
+        const res = this.cleanCache();
+        if (res.deletedCount > 0) {
+          console.log(`🧹 Transcode Cache: Startup cleaned ${res.deletedCount} expired segments (${Math.round(res.bytesFreed / (1024 * 1024))} MB freed)`);
+        }
+      } catch (err) {
+        console.warn('Transcode cache initial cleanup error:', err);
+      }
+    }, 1000);
+
+    // Schedule hourly eviction interval
+    this.cleanupTimer = setInterval(() => {
+      try {
+        this.cleanCache();
+      } catch (err) {
+        console.warn('Transcode cache periodic cleanup error:', err);
+      }
+    }, 60 * 60 * 1000);
   }
 
   public detectHardware(): SystemHardwareStatus {
@@ -179,6 +203,128 @@ class TranscodingEngine {
   }
 
   /**
+   * Returns current transcode cache statistics
+   */
+  public getCacheStatus(): TranscodeCacheStatus {
+    let fileCount = 0;
+    let totalSizeBytes = 0;
+
+    if (fs.existsSync(TRANSCODE_CACHE_DIR)) {
+      const files = fs.readdirSync(TRANSCODE_CACHE_DIR);
+      for (const file of files) {
+        if (file.endsWith('.ts')) {
+          try {
+            const stat = fs.statSync(path.join(TRANSCODE_CACHE_DIR, file));
+            fileCount++;
+            totalSizeBytes += stat.size;
+          } catch {}
+        }
+      }
+    }
+
+    return {
+      cacheDir: TRANSCODE_CACHE_DIR,
+      fileCount,
+      totalSizeBytes,
+      totalSizeMb: Math.round((totalSizeBytes / (1024 * 1024)) * 100) / 100,
+      maxAgeHours: TRANSCODE_CACHE_MAX_AGE_HOURS,
+      maxSizeMb: TRANSCODE_CACHE_MAX_SIZE_MB
+    };
+  }
+
+  /**
+   * Evicts expired transcode cache segments and enforces maximum size budget (LRU)
+   */
+  public cleanCache(options?: { maxAgeHours?: number; maxSizeBytes?: number }): CacheCleanResult {
+    const maxAgeHours = options?.maxAgeHours ?? TRANSCODE_CACHE_MAX_AGE_HOURS;
+    const maxSizeBytes = options?.maxSizeBytes ?? (TRANSCODE_CACHE_MAX_SIZE_MB * 1024 * 1024);
+    const now = Date.now();
+    const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+
+    let deletedCount = 0;
+    let bytesFreed = 0;
+
+    if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
+      return { deletedCount: 0, bytesFreed: 0, remainingCount: 0, remainingBytes: 0 };
+    }
+
+    interface CacheFileInfo {
+      name: string;
+      fullPath: string;
+      size: number;
+      mtime: number;
+    }
+
+    const cacheFiles: CacheFileInfo[] = [];
+
+    const fileNames = fs.readdirSync(TRANSCODE_CACHE_DIR);
+    for (const name of fileNames) {
+      if (!name.endsWith('.ts')) continue;
+      const fullPath = path.join(TRANSCODE_CACHE_DIR, name);
+      try {
+        const stat = fs.statSync(fullPath);
+        // Evict expired files first (TTL)
+        if (now - stat.mtimeMs > maxAgeMs) {
+          fs.unlinkSync(fullPath);
+          deletedCount++;
+          bytesFreed += stat.size;
+        } else {
+          cacheFiles.push({
+            name,
+            fullPath,
+            size: stat.size,
+            mtime: stat.mtimeMs
+          });
+        }
+      } catch (err) {
+        console.warn(`Failed to inspect/delete cache file ${name}:`, err);
+      }
+    }
+
+    // Check size budget (LRU eviction)
+    let currentTotalBytes = cacheFiles.reduce((acc, f) => acc + f.size, 0);
+
+    if (currentTotalBytes > maxSizeBytes) {
+      // Sort oldest mtime first for LRU eviction
+      cacheFiles.sort((a, b) => a.mtime - b.mtime);
+
+      for (const file of cacheFiles) {
+        if (currentTotalBytes <= maxSizeBytes) break;
+        try {
+          fs.unlinkSync(file.fullPath);
+          deletedCount++;
+          bytesFreed += file.size;
+          currentTotalBytes -= file.size;
+        } catch (err) {
+          console.warn(`Failed to delete LRU cache file ${file.name}:`, err);
+        }
+      }
+    }
+
+    const remainingFiles = fs.readdirSync(TRANSCODE_CACHE_DIR).filter((f) => f.endsWith('.ts'));
+    let remainingBytes = 0;
+    for (const f of remainingFiles) {
+      try {
+        remainingBytes += fs.statSync(path.join(TRANSCODE_CACHE_DIR, f)).size;
+      } catch {}
+    }
+
+    return {
+      deletedCount,
+      bytesFreed,
+      remainingCount: remainingFiles.length,
+      remainingBytes
+    };
+  }
+
+  /**
+   * Clears all transcode cache files immediately
+   */
+  public clearAllCache(): CacheCleanResult {
+    return this.cleanCache({ maxAgeHours: 0, maxSizeBytes: 0 });
+  }
+
+  /**
    * Transcodes an individual HLS segment on the fly with hardware acceleration
    */
   public async getHlsSegment(filePath: string, mediaId: string, quality: TranscodeQuality, seq: number): Promise<Buffer> {
@@ -187,6 +333,11 @@ class TranscodingEngine {
 
     // Return cached segment if already exists
     if (fs.existsSync(cacheFile)) {
+      // Update access time for LRU tracking
+      try {
+        const now = new Date();
+        fs.utimes(cacheFile, now, now, () => {});
+      } catch {}
       return fs.readFileSync(cacheFile);
     }
 

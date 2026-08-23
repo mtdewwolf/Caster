@@ -1,9 +1,13 @@
 import React from 'react';
-import { Film, Search, Settings, Shield, RefreshCw, Sparkles, Tv, Music, Clapperboard } from 'lucide-react';
+import { Film, Search, Settings, Shield, RefreshCw, Sparkles, Tv, Music, Clapperboard, History } from 'lucide-react';
 import type { SystemHardwareStatus } from '../types';
+
+export type AppView = 'library' | 'progress';
 
 interface NavbarProps {
   activeType: string;
+  activeView: AppView;
+  onViewChange: (view: AppView) => void;
   onTypeChange: (type: string) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
@@ -14,6 +18,8 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeType,
+  activeView,
+  onViewChange,
   onTypeChange,
   searchQuery,
   onSearchChange,
@@ -25,7 +31,13 @@ export const Navbar: React.FC<NavbarProps> = ({
     <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 sm:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
       {/* Brand & Main Nav */}
       <div className="flex items-center gap-8">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => onTypeChange('')}>
+        <div
+          className="flex items-center gap-2.5 cursor-pointer"
+          onClick={() => {
+            onViewChange('library');
+            onTypeChange('');
+          }}
+        >
           <div className="p-2 bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-400 rounded-xl shadow-lg shadow-blue-500/20 text-white">
             <Clapperboard className="w-5 h-5" />
           </div>
@@ -42,39 +54,74 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Categories */}
         <nav className="hidden md:flex items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-white/5 text-xs font-medium">
           <button
-            onClick={() => onTypeChange('')}
+            onClick={() => {
+              onViewChange('library');
+              onTypeChange('');
+            }}
             className={`px-3 py-1.5 rounded-lg transition-colors ${
-              activeType === '' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              activeView === 'library' && activeType === ''
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             All Media
           </button>
           <button
-            onClick={() => onTypeChange('movie')}
+            onClick={() => {
+              onViewChange('library');
+              onTypeChange('movie');
+            }}
             className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
-              activeType === 'movie' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              activeView === 'library' && activeType === 'movie'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Film className="w-3.5 h-3.5" />
             <span>Movies</span>
           </button>
           <button
-            onClick={() => onTypeChange('episode')}
+            onClick={() => {
+              onViewChange('library');
+              onTypeChange('episode');
+            }}
             className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
-              activeType === 'episode' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              activeView === 'library' && activeType === 'episode'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Tv className="w-3.5 h-3.5" />
             <span>TV Shows</span>
           </button>
           <button
-            onClick={() => onTypeChange('track')}
+            onClick={() => {
+              onViewChange('library');
+              onTypeChange('track');
+            }}
             className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
-              activeType === 'track' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              activeView === 'library' && activeType === 'track'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Music className="w-3.5 h-3.5" />
             <span>Music</span>
+          </button>
+
+          {/* View Divider */}
+          <div className="w-px h-5 bg-white/10 mx-1" />
+
+          <button
+            onClick={() => onViewChange('progress')}
+            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+              activeView === 'progress'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>Progress</span>
           </button>
         </nav>
       </div>
@@ -88,7 +135,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             type="text"
             placeholder="Search titles, series..."
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onChange={(e) => {
+              onViewChange('library');
+              onSearchChange(e.target.value);
+            }}
             className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
           />
         </div>
@@ -112,6 +162,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="uppercase">{hardware.accelType}</span>
           </div>
         )}
+
+        {/* Progress button (mobile only — desktop uses nav pill) */}
+        <button
+          onClick={() => onViewChange(activeView === 'progress' ? 'library' : 'progress')}
+          className={`md:hidden p-2 border rounded-xl transition-colors relative ${
+            activeView === 'progress'
+              ? 'bg-blue-600 border-blue-500 text-white'
+              : 'bg-slate-900 hover:bg-slate-800 border-white/10 text-slate-300 hover:text-white'
+          }`}
+          title="Watch Progress"
+        >
+          <History className="w-4 h-4" />
+        </button>
 
         {/* Settings button */}
         <button

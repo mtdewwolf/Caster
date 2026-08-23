@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2 } from 'lucide-react';
-import type { MediaItem, SystemHardwareStatus, ScanStatus } from './types';
+import type { MediaItem, Series, SystemHardwareStatus, ScanStatus } from './types';
 import { api } from './api';
-import { Navbar } from './components/Navbar';
+import { Navbar, AppView } from './components/Navbar';
 import { MediaCard } from './components/MediaCard';
+import { SeriesCard } from './components/SeriesCard';
+import { SeriesDetailPage } from './components/SeriesDetailPage';
 import { MediaDetailModal } from './components/MediaDetailModal';
 import { VideoPlayer } from './components/VideoPlayer';
 import { SettingsModal } from './components/SettingsModal';
+import { ProgressPage } from './components/ProgressPage';
 
 const MEDIA_PAGE_SIZE = 50;
 
@@ -15,6 +18,8 @@ export const App: React.FC = () => {
   const [mediaTotal, setMediaTotal] = useState<number>(0);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [activeType, setActiveType] = useState<string>('');
+  const [view, setView] = useState<AppView>('library');
+  const [refreshToken, setRefreshToken] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
   const [selectedResolution, setSelectedResolution] = useState<string>('');
@@ -23,9 +28,11 @@ export const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const mediaRequestId = useRef(0);
+  const [seriesList, setSeriesList] = useState<Series[]>([]);
+  const [selectedSeriesId, setSelectedSeriesId] = useState<string | null>(null);
+
 
   const loadMedia = async () => {
     const requestId = ++mediaRequestId.current;
@@ -111,6 +118,29 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [scanStatus?.isScanning]);
 
+  useEffect(() => {
+    if (activeType !== 'episode') {
+      setSelectedSeriesId(null);
+      return;
+    }
+    api
+      .getSeries({ search: searchQuery || undefined })
+      .then(setSeriesList)
+      .catch((err) => console.error('Error fetching series:', err));
+  }, [activeType, searchQuery, refreshToken]);
+
+  const closePlayer = () => {
+    setPlayingItem(null);
+    setRefreshToken((t) => t + 1);
+    loadMedia();
+    if (selectedSeriesId) {
+      api
+        .getSeries({ search: searchQuery || undefined })
+        .then(setSeriesList)
+        .catch(console.error);
+    }
+  };
+
   // Featured hero item (either the first continue watching or first media item)
   const heroItem = continueWatching[0] || mediaItems[0];
 
@@ -119,6 +149,8 @@ export const App: React.FC = () => {
       {/* Navigation Header */}
       <Navbar
         activeType={activeType}
+        activeView={view}
+        onViewChange={setView}
         onTypeChange={setActiveType}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -129,6 +161,16 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 pb-16">
+        {view === 'progress' ? (
+          <div className="mt-4">
+            <ProgressPage
+              refreshToken={refreshToken}
+              onPlay={(i) => setPlayingItem(i)}
+              onSelect={(i) => setSelectedItem(i)}
+            />
+          </div>
+        ) : (
+          <>
         {/* Hero Spotlight (shown if items exist and not actively searching) */}
         {heroItem && !searchQuery && !activeType && !selectedResolution && (
           <div className="relative aspect-[21/9] max-h-[460px] w-full bg-slate-950 overflow-hidden border-b border-white/5">
@@ -216,6 +258,49 @@ export const App: React.FC = () => {
             </section>
           )}
 
+          {/* Series Rollup / Media Grid */}
+          {activeType === 'episode' ? (
+            selectedSeriesId ? (
+              <SeriesDetailPage
+                seriesId={selectedSeriesId}
+                refreshToken={refreshToken}
+                onBack={() => setSelectedSeriesId(null)}
+                onPlay={(i) => setPlayingItem(i)}
+                onSelect={(i) => setSelectedItem(i)}
+              />
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
+                  <h2 className="text-lg font-bold text-white tracking-tight">TV Series</h2>
+                  <div className="text-xs text-slate-400">
+                    Showing <span className="font-semibold text-slate-200">{seriesList.length}</span> series
+                  </div>
+                </div>
+                {seriesList.length === 0 ? (
+                  <div className="py-20 flex flex-col items-center justify-center text-center p-8 bg-slate-900/40 border border-dashed border-white/10 rounded-2xl max-w-lg mx-auto">
+                    <div className="p-4 bg-blue-600/10 text-blue-400 rounded-full mb-3">
+                      <Tv className="w-8 h-8" />
+                    </div>
+                    <h3 className="text-base font-bold text-white mb-1">No TV Series Found</h3>
+                    <p className="text-xs text-slate-400 mb-4 max-w-xs leading-relaxed">
+                      Add a TV library and scan episodes named like <code>Show.Name.S01E02.mkv</code> to group them into series.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    {seriesList.map((series) => (
+                      <SeriesCard
+                        key={series.id}
+                        series={series}
+                        onSelect={(s) => setSelectedSeriesId(s.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )
+          ) : (
+            <>
           {/* Filter Bar */}
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
             <div className="flex items-center gap-2 text-xs">
@@ -292,17 +377,18 @@ export const App: React.FC = () => {
               )}
             </div>
           )}
+            </>
+          )}
         </div>
+          </>
+        )}
       </main>
 
       {/* Video Player Modal */}
       {playingItem && (
         <VideoPlayer
           item={playingItem}
-          onClose={() => {
-            setPlayingItem(null);
-            loadMedia();
-          }}
+          onClose={closePlayer}
         />
       )}
 

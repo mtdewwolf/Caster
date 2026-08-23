@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import { LibraryModel, MediaModel, ProgressModel } from '../db';
+import { LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
@@ -348,6 +348,37 @@ apiRouter.get('/media/continue-watching', (c) => {
   return c.json({ items });
 });
 
+// ---------------- Progress Page API ---------------- //
+
+apiRouter.get('/media/progress', (c) => {
+  const status = c.req.query('status');
+  const limit = c.req.query('limit') ? parseInt(c.req.query('limit'), 10) : 200;
+  const items = MediaModel.getProgressItems({ status, limit });
+  return c.json({ items });
+});
+
+apiRouter.post('/media/:id/progress/watched', (c) => {
+  const id = c.req.param('id');
+  const item = MediaModel.getById(id);
+  if (!item) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const progress = ProgressModel.markWatched(id);
+  return c.json({ progress });
+});
+
+apiRouter.post('/media/:id/progress/unwatched', (c) => {
+  const id = c.req.param('id');
+  ProgressModel.remove(id);
+  return c.json({ success: true });
+});
+
+apiRouter.delete('/media/:id/progress', (c) => {
+  const id = c.req.param('id');
+  ProgressModel.remove(id);
+  return c.json({ success: true });
+});
+
 apiRouter.get('/media/:id', (c) => {
   const id = c.req.param('id');
   const item = MediaModel.getById(id);
@@ -355,6 +386,35 @@ apiRouter.get('/media/:id', (c) => {
     return c.json({ error: 'Media not found' }, 404);
   }
   return c.json({ item });
+});
+
+// ---------------- Series Rollup API ---------------- //
+
+apiRouter.get('/series', (c) => {
+  const libraryId = c.req.query('libraryId');
+  const search = c.req.query('search');
+  const items = SeriesModel.getAll({ libraryId, search });
+  return c.json({ items });
+});
+
+apiRouter.get('/series/:id', (c) => {
+  const id = c.req.param('id');
+  const series = SeriesModel.getById(id);
+  if (!series) {
+    return c.json({ error: 'Series not found' }, 404);
+  }
+  const seasons = SeriesModel.getSeasons(series.library_id, series.title);
+  return c.json({ series, seasons });
+});
+
+apiRouter.get('/series/:id/episodes', (c) => {
+  const id = c.req.param('id');
+  const series = SeriesModel.getById(id);
+  if (!series) {
+    return c.json({ error: 'Series not found' }, 404);
+  }
+  const items = MediaModel.getBySeries(series.library_id, series.title);
+  return c.json({ series, items });
 });
 
 // ---------------- Direct Play Streaming (HTTP Range 206) ---------------- //
@@ -560,6 +620,27 @@ apiRouter.post('/system/hardware/accel', async (c) => {
   }
   transcoder.setPreferredAccel(accel);
   return c.json({ success: true, hardware: transcoder.getHardwareStatus() });
+});
+
+// ---------------- Transcode Cache Management API ---------------- //
+
+apiRouter.get('/system/cache/status', (c) => {
+  const status = transcoder.getCacheStatus();
+  return c.json(status);
+});
+
+apiRouter.post('/system/cache/clear', async (c) => {
+  let maxAgeHours: number | undefined = undefined;
+  let maxSizeBytes: number | undefined = undefined;
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    if (body.maxAgeHours !== undefined) maxAgeHours = Number(body.maxAgeHours);
+    if (body.maxSizeMb !== undefined) maxSizeBytes = Number(body.maxSizeMb) * 1024 * 1024;
+  } catch {}
+
+  const result = transcoder.cleanCache({ maxAgeHours, maxSizeBytes });
+  return c.json({ success: true, result });
 });
 
 function getMimeType(format: string): string {

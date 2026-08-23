@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
+import fs from 'fs';
+import path from 'path';
 import { parseFilename } from '../apps/server/src/scanner/metadata';
-import { transcoder } from '../apps/server/src/transcoder/engine';
-import { initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
+import { transcoder, TRANSCODE_CACHE_DIR } from '../apps/server/src/transcoder/engine';
+import { initDatabase, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../apps/server/src/db';
 
 describe('Media Server Tests', () => {
   beforeEach(() => {
@@ -127,6 +129,113 @@ describe('Media Server Tests', () => {
     });
   });
 
+  describe('Series Rollup', () => {
+    it('should group episodes into series with season rollups and watched counts', () => {
+      const libId = `test_lib_tv_${Date.now()}`;
+      LibraryModel.create({
+        id: libId,
+        name: 'Test TV',
+        path: '/tmp/test_tv',
+        type: 'tv',
+        created_at: new Date().toISOString()
+      });
+
+      const now = new Date().toISOString();
+      const episodes = [
+        { id: `ep_${Date.now()}_1`, s: 1, e: 1, title: 'Pilot' },
+        { id: `ep_${Date.now()}_2`, s: 1, e: 2, title: 'Second' },
+        { id: `ep_${Date.now()}_3`, s: 2, e: 1, title: 'S2 Opener' }
+      ];
+
+      for (const ep of episodes) {
+        MediaModel.upsert({
+          id: ep.id,
+          library_id: libId,
+          title: ep.title,
+          original_filename: `Breaking.Bad.S0${ep.s}E0${ep.e}.mkv`,
+          relative_path: `S0${ep.s}/Breaking.Bad.S0${ep.s}E0${ep.e}.mkv`,
+          full_path: `/tmp/test_tv/S0${ep.s}/ep_${ep.id}.mkv`,
+          type: 'episode',
+          series_title: 'Breaking Bad',
+          season_number: ep.s,
+          episode_number: ep.e,
+          year: 2008,
+          duration: 2700,
+          size_bytes: 1024000,
+          format: 'mkv',
+          is_hdr: false,
+          streams_json: '[]',
+          poster_path: `/api/media/${ep.id}/thumbnail`,
+          created_at: now,
+          updated_at: now
+        });
+      }
+
+      ProgressModel.markWatched(episodes[0].id);
+      ProgressModel.markWatched(episodes[1].id);
+
+      const all = SeriesModel.getAll({ libraryId: libId });
+      expect(all.length).toBe(1);
+
+      const series = all[0];
+      expect(series.title).toBe('Breaking Bad');
+      expect(series.episode_count).toBe(3);
+      expect(series.season_count).toBe(2);
+      expect(series.watched_count).toBe(2);
+      expect(series.total_duration).toBe(8100);
+
+      const fetched = SeriesModel.getById(series.id);
+      expect(fetched).not.toBeNull();
+      expect(fetched?.title).toBe('Breaking Bad');
+
+      const seasons = SeriesModel.getSeasons(libId, 'Breaking Bad');
+      expect(seasons.length).toBe(2);
+      expect(seasons[0].season_number).toBe(1);
+      expect(seasons[0].episode_count).toBe(2);
+      expect(seasons[0].watched_count).toBe(2);
+      expect(seasons[1].season_number).toBe(2);
+      expect(seasons[1].watched_count).toBe(0);
+
+      const eps = MediaModel.getBySeries(libId, 'Breaking Bad');
+      expect(eps.length).toBe(3);
+      expect(eps.map((e) => e.id)).toEqual([episodes[0].id, episodes[1].id, episodes[2].id]);
+
+      const searched = SeriesModel.getAll({ search: 'breaking' });
+      expect(searched.some((s) => s.id === series.id)).toBe(true);
+    });
+
+    it('should not roll up movies into series', () => {
+      const libId = `test_lib_noseries_${Date.now()}`;
+      LibraryModel.create({
+        id: libId,
+        name: 'Test No Series',
+        path: '/tmp/test_noseries',
+        type: 'movies',
+        created_at: new Date().toISOString()
+      });
+
+      MediaModel.upsert({
+        id: `movie_${Date.now()}`,
+        library_id: libId,
+        title: 'Some Movie',
+        original_filename: 'Some.Movie.2020.mkv',
+        relative_path: 'Some.Movie.2020.mkv',
+        full_path: `/tmp/test_noseries/movie_${Date.now()}.mkv`,
+        type: 'movie',
+        duration: 6000,
+        size_bytes: 1024000,
+        format: 'mkv',
+        is_hdr: false,
+        streams_json: '[]',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      const all = SeriesModel.getAll({ libraryId: libId });
+      expect(all.length).toBe(0);
+    });
+  });
+
   describe('Transcoding Engine & HLS', () => {
     it('should detect system hardware capabilities', () => {
       const hw = transcoder.getHardwareStatus();
@@ -151,4 +260,68 @@ describe('Media Server Tests', () => {
       expect(variant).toContain('#EXT-X-ENDLIST');
     });
   });
+
+  describe('Transcode Cache Eviction Policy', () => {
+    beforeEach(() => {
+      if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
+        fs.mkdirSync(TRANSCODE_CACHE_DIR, { recursive: true });
+      }
+      transcoder.clearAllCache();
+    });
+
+    it('should report cache status accurately', () => {
+      const file1 = path.join(TRANSCODE_CACHE_DIR, 'test_status_1.ts');
+      fs.writeFileSync(file1, Buffer.alloc(1024)); // 1 KB
+
+      const status = transcoder.getCacheStatus();
+      expect(status.fileCount).toBeGreaterThanOrEqual(1);
+      expect(status.totalSizeBytes).toBeGreaterThanOrEqual(1024);
+      expect(status.maxAgeHours).toBeGreaterThan(0);
+      expect(status.maxSizeMb).toBeGreaterThan(0);
+    });
+
+    it('should evict expired cache segments based on TTL', () => {
+      const fileOld = path.join(TRANSCODE_CACHE_DIR, 'test_expired_1.ts');
+      const fileNew = path.join(TRANSCODE_CACHE_DIR, 'test_active_1.ts');
+
+      fs.writeFileSync(fileOld, Buffer.alloc(2048));
+      fs.writeFileSync(fileNew, Buffer.alloc(2048));
+
+      // Make fileOld 30 hours old
+      const thirtyHoursAgo = new Date(Date.now() - 30 * 60 * 60 * 1000);
+      fs.utimesSync(fileOld, thirtyHoursAgo, thirtyHoursAgo);
+
+      const result = transcoder.cleanCache({ maxAgeHours: 24 });
+      expect(result.deletedCount).toBe(1);
+      expect(result.bytesFreed).toBe(2048);
+      expect(fs.existsSync(fileOld)).toBe(false);
+      expect(fs.existsSync(fileNew)).toBe(true);
+    });
+
+    it('should evict oldest segments when size exceeds budget (LRU)', () => {
+      const fileOldest = path.join(TRANSCODE_CACHE_DIR, 'test_lru_1.ts');
+      const fileMid = path.join(TRANSCODE_CACHE_DIR, 'test_lru_2.ts');
+      const fileNewest = path.join(TRANSCODE_CACHE_DIR, 'test_lru_3.ts');
+
+      fs.writeFileSync(fileOldest, Buffer.alloc(1000));
+      fs.writeFileSync(fileMid, Buffer.alloc(1000));
+      fs.writeFileSync(fileNewest, Buffer.alloc(1000));
+
+      const time1 = new Date(Date.now() - 3000);
+      const time2 = new Date(Date.now() - 2000);
+      const time3 = new Date(Date.now() - 1000);
+
+      fs.utimesSync(fileOldest, time1, time1);
+      fs.utimesSync(fileMid, time2, time2);
+      fs.utimesSync(fileNewest, time3, time3);
+
+      // Budget = 2500 bytes (total is 3000, so oldest should be deleted)
+      const result = transcoder.cleanCache({ maxAgeHours: 100, maxSizeBytes: 2500 });
+      expect(result.deletedCount).toBe(1);
+      expect(fs.existsSync(fileOldest)).toBe(false);
+      expect(fs.existsSync(fileMid)).toBe(true);
+      expect(fs.existsSync(fileNewest)).toBe(true);
+    });
+  });
 });
+
