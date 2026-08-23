@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, Search, Settings, Shield, RefreshCw, Sparkles, Tv, Music, Clapperboard, History } from 'lucide-react';
+import { Film, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut } from 'lucide-react';
 import type { SystemHardwareStatus } from '../types';
 
 export type AppView = 'library' | 'progress';
@@ -14,6 +14,9 @@ interface NavbarProps {
   onOpenSettings: () => void;
   hardware: SystemHardwareStatus | null;
   isScanning: boolean;
+  isAdmin: boolean;
+  onLogin: () => void;
+  onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -25,7 +28,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSearchChange,
   onOpenSettings,
   hardware,
-  isScanning
+  isScanning,
+  isAdmin,
+  onLogin,
+  onLogout
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 sm:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
@@ -161,6 +167,28 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Sparkles className="w-3.5 h-3.5 text-blue-400" />
             <span className="uppercase">{hardware.accelType}</span>
           </div>
+        )}
+
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-950/40 hover:bg-blue-900/50 border border-blue-500/30 rounded-lg text-blue-300 text-[11px] font-medium transition-colors"
+            title="Sign out of admin mode"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Admin</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onLogin}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg text-slate-300 hover:text-white text-[11px] font-medium transition-colors"
+            title="Sign in for admin access"
+          >
+            <LockKeyhole className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Admin login</span>
+          </button>
         )}
 
         {/* Progress button (mobile only — desktop uses nav pill) */}

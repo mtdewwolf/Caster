@@ -22,6 +22,8 @@ interface ProgressPageProps {
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
   refreshToken: number;
+  isAdmin: boolean;
+  onRequireAdmin: () => void;
 }
 
 const formatDuration = (secs: number) => {
@@ -48,7 +50,13 @@ const formatRelative = (iso: string) => {
   return new Date(iso).toLocaleDateString();
 };
 
-export const ProgressPage: React.FC<ProgressPageProps> = ({ onPlay, onSelect, refreshToken }) => {
+export const ProgressPage: React.FC<ProgressPageProps> = ({
+  onPlay,
+  onSelect,
+  refreshToken,
+  isAdmin,
+  onRequireAdmin
+}) => {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [loading, setLoading] = useState<boolean>(true);
@@ -86,16 +94,28 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({ onPlay, onSelect, re
   );
 
   const handleMarkWatched = async (id: string) => {
+    if (!isAdmin) {
+      onRequireAdmin();
+      return;
+    }
     await api.markWatched(id);
     await loadProgress();
   };
 
   const handleMarkUnwatched = async (id: string) => {
+    if (!isAdmin) {
+      onRequireAdmin();
+      return;
+    }
     await api.markUnwatched(id);
     await loadProgress();
   };
 
   const handleRemove = async (id: string) => {
+    if (!isAdmin) {
+      onRequireAdmin();
+      return;
+    }
     await api.removeProgress(id);
     await loadProgress();
   };
