@@ -117,6 +117,7 @@ export interface SeriesSeason {
 
 export interface WatchProgress {
   id: string;
+  user_id: string;
   media_id: string;
   position_seconds: number;
   duration_seconds: number;

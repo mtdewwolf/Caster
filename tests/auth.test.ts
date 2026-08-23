@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
-import { authRouter, requireAdminForMutations } from '../apps/server/src/auth';
+import { authRouter, getCurrentUserId, requireAdminForMutations } from '../apps/server/src/auth';
 import { apiRouter } from '../apps/server/src/routes/api';
 
 describe('Admin authentication', () => {
@@ -25,6 +25,7 @@ describe('Admin authentication', () => {
   app.use('/api/*', requireAdminForMutations);
   app.route('/api/auth', authRouter);
   app.get('/api/libraries', (c) => c.json({ libraries: [] }));
+  app.get('/api/progress-owner', (c) => c.json({ userId: getCurrentUserId(c) }));
   app.post('/api/libraries', (c) => c.json({ created: true }));
   app.delete('/api/libraries/:id', (c) => c.json({ deleted: c.req.param('id') }));
   app.route('/api', apiRouter);
@@ -33,11 +34,13 @@ describe('Admin authentication', () => {
     const readResponse = await app.request('/api/libraries');
     const writeResponse = await app.request('/api/libraries', { method: 'POST' });
     const deleteResponse = await app.request('/api/libraries/lib_1', { method: 'DELETE' });
+    const ownerResponse = await app.request('/api/progress-owner');
 
     expect(readResponse.status).toBe(200);
     expect(writeResponse.status).toBe(401);
     expect(await writeResponse.json()).toEqual({ error: 'Admin authentication required' });
     expect(deleteResponse.status).toBe(401);
+    expect(await ownerResponse.json()).toEqual({ userId: 'public' });
   });
 
   it('creates an HttpOnly session and authorizes mutations after login', async () => {
@@ -61,9 +64,13 @@ describe('Admin authentication', () => {
       method: 'POST',
       headers: { Cookie: cookie }
     });
+    const ownerResponse = await app.request('/api/progress-owner', {
+      headers: { Cookie: cookie }
+    });
 
     expect(await sessionResponse.json()).toEqual({ authenticated: true, configured: true });
     expect(writeResponse.status).toBe(200);
+    expect(await ownerResponse.json()).toEqual({ userId: 'admin' });
   });
 
   it('rejects bad credentials and accepts the configured Bearer token', async () => {
