@@ -3,8 +3,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import { LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
+import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
+import { convertSrtToVtt } from '../scanner/subtitles';
 import { transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 
@@ -571,6 +572,25 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
   const item = MediaModel.getById(id);
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
+  }
+
+  const externalTrack = ExternalSubtitleModel.getByMediaAndIndex(id, trackIndex);
+  if (externalTrack) {
+    if (!fs.existsSync(externalTrack.file_path)) {
+      return c.text('Subtitle file not found', 404);
+    }
+    try {
+      const srt = fs.readFileSync(externalTrack.file_path, 'utf-8');
+      return new Response(convertSrtToVtt(srt), {
+        headers: {
+          'Content-Type': 'text/vtt; charset=utf-8',
+          'Cache-Control': 'public, max-age=86400'
+        }
+      });
+    } catch (err: any) {
+      console.error(`Error reading external subtitle ${externalTrack.file_path}:`, err);
+      return c.text('WEBVTT\n\n', 200, { 'Content-Type': 'text/vtt' });
+    }
   }
 
   try {
