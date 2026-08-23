@@ -86,7 +86,7 @@ describe('External subtitles (.srt sidecars)', () => {
       });
       await scanLibrary(libraryId);
 
-      const { items } = MediaModel.getAll({ libraryId });
+      const { items } = MediaModel.getAll('test-user', { libraryId });
       expect(items.length).toBe(1);
       itemId = items[0].id;
     });
@@ -96,7 +96,7 @@ describe('External subtitles (.srt sidecars)', () => {
     });
 
     it('appends external tracks to streams_json with synthetic indexes', () => {
-      const item = MediaModel.getById(itemId)!;
+      const item = MediaModel.getById(itemId, 'test-user')!;
       const streams = JSON.parse(item.streams_json);
       const subs = streams.filter((s: any) => s.codec_type === 'subtitle');
 
@@ -117,7 +117,7 @@ describe('External subtitles (.srt sidecars)', () => {
     });
 
     it('returns 404 when the indexed sidecar file is gone', async () => {
-      const item = MediaModel.getById(itemId)!;
+      const item = MediaModel.getById(itemId, 'test-user')!;
       const streams = JSON.parse(item.streams_json);
       const orphanIndex = streams.filter((s: any) => s.codec_type === 'subtitle')[0].index;
       const target = findExternalSubtitles(item.full_path)[orphanIndex - 1000];

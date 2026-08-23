@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import type { Library, MediaItem, Series, SeriesSeason, WatchProgress } from '../types';
+import { ADMIN_USER_ID } from '../auth';
 
 // Ensure data directory exists
 const DATA_DIR = process.env.MEDIA_DATA_DIR || path.join(process.cwd(), 'data');
@@ -135,17 +136,22 @@ export function initDatabase() {
   db.run(`
     CREATE TABLE IF NOT EXISTS watch_progress (
       id TEXT PRIMARY KEY,
-      media_id TEXT UNIQUE NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
       position_seconds REAL NOT NULL DEFAULT 0,
       duration_seconds REAL NOT NULL DEFAULT 0,
       progress_percent REAL NOT NULL DEFAULT 0,
       completed INTEGER NOT NULL DEFAULT 0,
-      last_watched_at TEXT NOT NULL
+      last_watched_at TEXT NOT NULL,
+      UNIQUE(user_id, media_id)
     );
   `);
 
+  migrateWatchProgressToUsers(db);
+
   db.run(`
-    CREATE INDEX IF NOT EXISTS idx_progress_last_watched ON watch_progress(last_watched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_progress_user_last_watched
+      ON watch_progress(user_id, last_watched_at DESC);
   `);
 
   db.run(`
@@ -154,6 +160,43 @@ export function initDatabase() {
       value TEXT NOT NULL
     );
   `);
+}
+
+export function migrateWatchProgressToUsers(database: Database): void {
+  const columns = database.query('PRAGMA table_info(watch_progress)').all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === 'user_id')) return;
+
+  database.run('BEGIN IMMEDIATE');
+  try {
+    database.run(`
+      CREATE TABLE watch_progress_with_users (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+        position_seconds REAL NOT NULL DEFAULT 0,
+        duration_seconds REAL NOT NULL DEFAULT 0,
+        progress_percent REAL NOT NULL DEFAULT 0,
+        completed INTEGER NOT NULL DEFAULT 0,
+        last_watched_at TEXT NOT NULL,
+        UNIQUE(user_id, media_id)
+      );
+    `);
+    database.run(`
+      INSERT INTO watch_progress_with_users (
+        id, user_id, media_id, position_seconds, duration_seconds,
+        progress_percent, completed, last_watched_at
+      )
+      SELECT id, ?, media_id, position_seconds, duration_seconds,
+             progress_percent, completed, last_watched_at
+      FROM watch_progress
+    `, [ADMIN_USER_ID]);
+    database.run('DROP TABLE watch_progress');
+    database.run('ALTER TABLE watch_progress_with_users RENAME TO watch_progress');
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
 }
 
 // ---------------- Helper Queries ---------------- //
@@ -241,22 +284,23 @@ export const ExternalSubtitleModel = {
 };
 
 export const MediaModel = {
-  getById: (id: string): MediaItem | null => {
+  getById: (id: string, userId: string): MediaItem | null => {
     const row = db.query(`
       SELECT m.*, l.name as library_name, 
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
-             p.progress_percent, p.completed, p.last_watched_at
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
       FROM media_items m
       JOIN libraries l ON m.library_id = l.id
-      LEFT JOIN watch_progress p ON m.id = p.media_id
+      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
       WHERE m.id = ?
-    `).get(id) as any;
+    `).get(userId, id) as any;
 
     if (!row) return null;
     return formatMediaRow(row);
   },
 
-  getAll: (options: {
+  getAll: (userId: string, options: {
     libraryId?: string;
     type?: string;
     search?: string;
@@ -310,14 +354,15 @@ export const MediaModel = {
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
-             p.progress_percent, p.completed, p.last_watched_at
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
       FROM media_items m
       JOIN libraries l ON m.library_id = l.id
-      LEFT JOIN watch_progress p ON m.id = p.media_id
+      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
       ${whereStr}
       ${orderStr}
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset) as any[];
+    `).all(userId, ...params, limit, offset) as any[];
 
     return {
       items: rows.map(formatMediaRow),
@@ -325,9 +370,9 @@ export const MediaModel = {
     };
   },
 
-  getProgressItems: (options: { status?: string; limit?: number } = {}): MediaItem[] => {
-    const whereClauses: string[] = [];
-    const params: any[] = [];
+  getProgressItems: (userId: string, options: { status?: string; limit?: number } = {}): MediaItem[] => {
+    const whereClauses = ['p.user_id = ?'];
+    const params: any[] = [userId];
 
     if (options.status === 'in_progress') {
       whereClauses.push('p.completed = 0');
@@ -341,7 +386,8 @@ export const MediaModel = {
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
-             p.progress_percent, p.completed, p.last_watched_at
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
       FROM watch_progress p
       JOIN media_items m ON p.media_id = m.id
       JOIN libraries l ON m.library_id = l.id
@@ -353,18 +399,20 @@ export const MediaModel = {
     return rows.map(formatMediaRow);
   },
 
-  getContinueWatching: (limit: number = 10): MediaItem[] => {
+  getContinueWatching: (userId: string, limit: number = 10): MediaItem[] => {
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
-             p.progress_percent, p.completed, p.last_watched_at
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
       FROM watch_progress p
       JOIN media_items m ON p.media_id = m.id
       JOIN libraries l ON m.library_id = l.id
-      WHERE p.completed = 0 AND p.position_seconds > 10 AND p.progress_percent < 95
+      WHERE p.user_id = ?
+        AND p.completed = 0 AND p.position_seconds > 10 AND p.progress_percent < 95
       ORDER BY p.last_watched_at DESC
       LIMIT ?
-    `).all(limit) as any[];
+    `).all(userId, limit) as any[];
 
     return rows.map(formatMediaRow);
   },
@@ -448,17 +496,18 @@ export const MediaModel = {
     db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
   },
 
-  getBySeries: (libraryId: string, seriesTitle: string): MediaItem[] => {
+  getBySeries: (libraryId: string, seriesTitle: string, userId: string): MediaItem[] => {
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
-             p.progress_percent, p.completed, p.last_watched_at
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
       FROM media_items m
       JOIN libraries l ON m.library_id = l.id
-      LEFT JOIN watch_progress p ON m.id = p.media_id
+      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
       WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
       ORDER BY COALESCE(m.season_number, 0) ASC, COALESCE(m.episode_number, 0) ASC, m.title ASC
-    `).all(libraryId, seriesTitle) as any[];
+    `).all(userId, libraryId, seriesTitle) as any[];
 
     return rows.map(formatMediaRow);
   }
@@ -474,7 +523,7 @@ const SERIES_GROUP_SELECT = `
          SUM(CASE WHEN p.completed = 1 THEN 1 ELSE 0 END) as watched_count
   FROM media_items m
   JOIN libraries l ON m.library_id = l.id
-  LEFT JOIN watch_progress p ON p.media_id = m.id
+  LEFT JOIN watch_progress p ON p.media_id = m.id AND p.user_id = ?
   WHERE m.type = 'episode' AND m.series_title IS NOT NULL AND m.series_title != ''
 `;
 
@@ -498,7 +547,7 @@ function formatSeriesRow(row: any): Series {
 }
 
 export const SeriesModel = {
-  getAll: (options: { libraryId?: string; search?: string } = {}): Series[] => {
+  getAll: (userId: string, options: { libraryId?: string; search?: string } = {}): Series[] => {
     const clauses: string[] = [];
     const params: any[] = [];
 
@@ -517,31 +566,31 @@ export const SeriesModel = {
       ${whereStr}
       GROUP BY m.library_id, m.series_title
       ORDER BY m.series_title COLLATE NOCASE ASC
-    `).all(...params) as any[];
+    `).all(userId, ...params) as any[];
 
     return rows.map(formatSeriesRow);
   },
 
-  getById: (id: string): Series | null => {
+  getById: (id: string, userId: string): Series | null => {
     const rows = db.query(`
       ${SERIES_GROUP_SELECT}
       GROUP BY m.library_id, m.series_title
-    `).all() as any[];
+    `).all(userId) as any[];
     return rows.map(formatSeriesRow).find((s) => s.id === id) || null;
   },
 
-  getSeasons: (libraryId: string, seriesTitle: string): SeriesSeason[] => {
+  getSeasons: (libraryId: string, seriesTitle: string, userId: string): SeriesSeason[] => {
     const rows = db.query(`
       SELECT COALESCE(m.season_number, 0) as season_number,
              COUNT(*) as episode_count,
              COALESCE(SUM(m.duration), 0) as total_duration,
              SUM(CASE WHEN p.completed = 1 THEN 1 ELSE 0 END) as watched_count
       FROM media_items m
-      LEFT JOIN watch_progress p ON p.media_id = m.id
+      LEFT JOIN watch_progress p ON p.media_id = m.id AND p.user_id = ?
       WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
       GROUP BY COALESCE(m.season_number, 0)
       ORDER BY season_number ASC
-    `).all(libraryId, seriesTitle) as any[];
+    `).all(userId, libraryId, seriesTitle) as any[];
 
     return rows.map((row) => ({
       season_number: row.season_number,
@@ -558,16 +607,17 @@ function buildFtsQuery(search: string): string {
 }
 
 export const ProgressModel = {
-  upsert: (mediaId: string, position: number, duration: number) => {
+  upsert: (userId: string, mediaId: string, position: number, duration: number): WatchProgress => {
     const percent = duration > 0 ? Math.min(100, Math.round((position / duration) * 100)) : 0;
     const completed = percent >= 92 ? 1 : 0;
-    const id = `prog_${mediaId}`;
+    const id = `prog_${crypto.createHash('sha256').update(`${userId}\0${mediaId}`).digest('hex').substring(0, 24)}`;
     const now = new Date().toISOString();
 
     const stmt = db.prepare(`
-      INSERT INTO watch_progress (id, media_id, position_seconds, duration_seconds, progress_percent, completed, last_watched_at)
-      VALUES ($id, $media_id, $position, $duration, $percent, $completed, $now)
-      ON CONFLICT(media_id) DO UPDATE SET
+      INSERT INTO watch_progress (id, user_id, media_id, position_seconds, duration_seconds, progress_percent, completed, last_watched_at)
+      VALUES ($id, $user_id, $media_id, $position, $duration, $percent, $completed, $now)
+      ON CONFLICT(user_id, media_id) DO UPDATE SET
+        id = excluded.id,
         position_seconds = excluded.position_seconds,
         duration_seconds = excluded.duration_seconds,
         progress_percent = excluded.progress_percent,
@@ -577,6 +627,7 @@ export const ProgressModel = {
 
     stmt.run({
       $id: id,
+      $user_id: userId,
       $media_id: mediaId,
       $position: position,
       $duration: duration,
@@ -587,6 +638,7 @@ export const ProgressModel = {
 
     return {
       id,
+      user_id: userId,
       media_id: mediaId,
       position_seconds: position,
       duration_seconds: duration,
@@ -596,19 +648,22 @@ export const ProgressModel = {
     };
   },
 
-  markWatched: (mediaId: string) => {
-    const existing = db.query('SELECT duration_seconds FROM watch_progress WHERE media_id = ?').get(mediaId) as any;
+  markWatched: (userId: string, mediaId: string): WatchProgress => {
+    const existing = db.query(`
+      SELECT duration_seconds FROM watch_progress
+      WHERE user_id = ? AND media_id = ?
+    `).get(userId, mediaId) as any;
     const mediaRow = db.query('SELECT duration FROM media_items WHERE id = ?').get(mediaId) as any;
 
     const duration = existing?.duration_seconds > 0
       ? existing.duration_seconds
       : (mediaRow?.duration || 0);
 
-    return ProgressModel.upsert(mediaId, duration, duration);
+    return ProgressModel.upsert(userId, mediaId, duration, duration);
   },
 
-  remove: (mediaId: string) => {
-    db.run('DELETE FROM watch_progress WHERE media_id = ?', [mediaId]);
+  remove: (userId: string, mediaId: string) => {
+    db.run('DELETE FROM watch_progress WHERE user_id = ? AND media_id = ?', [userId, mediaId]);
   }
 };
 
@@ -617,6 +672,7 @@ function formatMediaRow(row: any): MediaItem {
   if (row.progress_id) {
     progress = {
       id: row.progress_id,
+      user_id: row.progress_user_id,
       media_id: row.id,
       position_seconds: row.position_seconds,
       duration_seconds: row.p_duration,
