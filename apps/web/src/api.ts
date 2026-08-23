@@ -1,4 +1,4 @@
-import type { Library, MediaItem, SystemHardwareStatus, ScanStatus } from './types';
+import type { Library, MediaItem, SystemHardwareStatus, ScanStatus, BrowseResult } from './types';
 
 const API_BASE = '/api';
 
@@ -93,5 +93,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accel })
     });
+  },
+
+  async browseFilesystem(dirPath?: string): Promise<BrowseResult> {
+    const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+    const res = await fetch(`${API_BASE}/fs/browse${query}`);
+    if (!res.ok) {
+      throw new Error('Folder not found or not accessible');
+    }
+    return await res.json();
   }
 };
