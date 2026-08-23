@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="32" fill="#1C1004" stroke="#EA580C" stroke-width="3" />
+  <defs>
+    <linearGradient id="devFavGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDBA74" />
+      <stop offset="100%" stop-color="#EA580C" />
+    </linearGradient>
+  </defs>
+  <path d="M 40 92 A 52 52 0 0 1 92 40" fill="none" stroke="url(#devFavGrad)" stroke-width="10" stroke-linecap="round" />
+  <path d="M 52 52 L 86 71 L 52 90 Z" fill="url(#devFavGrad)" />
+  <circle cx="40" cy="92" r="7" fill="#FDBA74" />
+  
+  <!-- DEV Ribbon Badge -->
+  <rect x="74" y="16" width="38" height="18" rx="4" fill="#EA580C" />
+  <text x="93" y="29" fill="#FFFFFF" font-family="'Inter', monospace, sans-serif" font-weight="900" font-size="9" text-anchor="middle">DEV</text>
+</svg>

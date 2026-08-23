@@ -1,5 +1,5 @@
 # ==========================================
-# NovaStream Personal Media Server for TrueNAS SCALE
+# Caster Personal Media Server for TrueNAS SCALE
 # Hardware-accelerated (Intel QSV / VAAPI / NVIDIA NVENC)
 # ==========================================
 

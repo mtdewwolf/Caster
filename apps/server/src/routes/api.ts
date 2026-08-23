@@ -658,7 +658,7 @@ apiRouter.post('/media/:id/progress', async (c) => {
 apiRouter.get('/system/status', (c) => {
   const hw = transcoder.getHardwareStatus();
   return c.json({
-    server: 'NovaStream Personal Media Server',
+    server: 'Caster Personal Media Server',
     version: '1.0.0',
     platform: process.platform,
     arch: process.arch,

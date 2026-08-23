@@ -36,7 +36,7 @@ app.route('/api/fs', fsRouter);
 // Health check endpoint
 app.get('/health', (c) => c.json({
   status: 'ok',
-  service: 'NovaStream Media Server',
+  service: 'Caster Media Server',
   time: new Date().toISOString()
 }));
 
@@ -49,11 +49,11 @@ if (fs.existsSync(WEB_DIST)) {
   app.get('/', (c) => c.html(`
     <!DOCTYPE html>
     <html>
-      <head><title>NovaStream Media Server</title></head>
+      <head><title>Caster Media Server</title></head>
       <body style="font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 40px; text-align: center;">
-        <h1>🎬 NovaStream Media Server API is Running</h1>
+        <h1>🎬 Caster Media Server API is Running</h1>
         <p>API Base: <code>/api</code> | Port: <code>${process.env.PORT || 3001}</code></p>
-        <p>Run the frontend with <code>bun run --filter '@media/web' dev</code> or build it for full web player integration.</p>
+        <p>Run the frontend with <code>bun run --filter '@caster/web' dev</code> or build it for full web player integration.</p>
       </body>
     </html>
   `));
@@ -63,7 +63,7 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
 console.log(`\n======================================================`);
-console.log(`🚀 NovaStream Media Server starting on http://${HOST}:${PORT}`);
+console.log(`🚀 Caster Media Server starting on http://${HOST}:${PORT}`);
 console.log(`🌐 Tailscale & Local Network Ready`);
 const hw = transcoder.getHardwareStatus();
 console.log(`⚡ Hardware Acceleration: [${hw.accelType.toUpperCase()}]`);

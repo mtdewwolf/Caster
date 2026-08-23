@@ -1,10 +1,10 @@
 services:
-  novastream:
-    container_name: novastream
+  caster:
+    container_name: caster
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: novastream:latest
+    image: caster:latest
     restart: unless-stopped
     ports:
       - "3001:3001"
@@ -18,14 +18,14 @@ services:
       - TRANSCODE_CACHE_MAX_AGE_HOURS=${TRANSCODE_CACHE_MAX_AGE_HOURS:-24}
       - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
       # Required: protects every POST/PUT/PATCH/DELETE API operation.
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting NovaStream}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting Caster}
       # Optional for API clients: send this value as Authorization: Bearer <token>.
       # - ADMIN_TOKEN=${ADMIN_TOKEN}
       # Set timezone matching your TrueNAS SCALE host
       - TZ=America/New_York
     volumes:
       # Persistent app data, database, posters, and transcoder cache
-      - /mnt/tank/appdata/novastream/data:/app/data
+      - /mnt/tank/appdata/caster/data:/app/data
       # Your TrueNAS ZFS media pool (Read-Only)
       - /mnt/tank/media:/media:ro
     

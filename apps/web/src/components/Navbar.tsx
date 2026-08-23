@@ -49,7 +49,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
           <div>
             <div className="text-base font-extrabold tracking-tight text-white flex items-center gap-1.5">
-              <span>NovaStream</span>
+              <span>Caster</span>
               <span className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.2 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded">
                 NAS
               </span>

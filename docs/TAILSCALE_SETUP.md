@@ -1,10 +1,10 @@
-# Tailscale Remote Access Guide for NovaStream on TrueNAS SCALE
+# Tailscale Remote Access Guide for Caster on TrueNAS SCALE
 
 This guide explains how to stream your media securely from anywhere in the world over **Tailscale** with **zero port forwarding**, zero exposure to the public internet, and end-to-end WireGuard encryption.
 
 ---
 
-## 1. How Tailscale Works with NovaStream
+## 1. How Tailscale Works with Caster
 
 Instead of opening ports (like port 32400 in Plex) on your home router and risking security vulnerabilities, Tailscale creates a private peer-to-peer mesh network (Tailnet).
 
@@ -27,7 +27,7 @@ If you already have Tailscale running directly on your TrueNAS SCALE host:
    tailscale status
    ```
 2. Note your TrueNAS Tailscale IP (e.g. `100.x.y.z`) or MagicDNS name (e.g. `truenas-nas`).
-3. Deploy NovaStream using standard `docker/docker-compose.yml`.
+3. Deploy Caster using standard `docker/docker-compose.yml`.
 4. Any device connected to your Tailscale network can immediately stream by opening:
    ```text
    http://100.x.y.z:3001
@@ -39,7 +39,7 @@ If you already have Tailscale running directly on your TrueNAS SCALE host:
 
 ### Method B: Tailscale Container Sidecar (`docker-compose.tailscale.yml`)
 
-If you want an isolated Tailscale container dedicated to NovaStream:
+If you want an isolated Tailscale container dedicated to Caster:
 
 1. Create a Tailscale Auth Key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys):
    - Check **Reusable** and **Ephemeral** (optional, recommended for containers).
@@ -48,10 +48,10 @@ If you want an isolated Tailscale container dedicated to NovaStream:
    export TS_AUTHKEY="tskey-auth-xxxxxx-xxxxxxxx"
    docker compose -f docker-compose.tailscale.yml up -d
    ```
-3. The server will appear on your Tailscale admin console as `novastream-nas`.
+3. The server will appear on your Tailscale admin console as `caster-nas`.
 4. Access the server from any tailnet device at:
    ```text
-   http://novastream-nas:3001
+   http://caster-nas:3001
    ```
 
 ---
@@ -76,7 +76,7 @@ Tailscale Serve automatically generates valid Let's Encrypt TLS certificates for
 ### 📱 iOS & Android (iPhone, iPad, Android Phones)
 1. Install the **Tailscale** app from the App Store / Google Play Store and sign in.
 2. Open Safari / Chrome and visit `http://<tailscale-name>:3001`.
-3. *(Optional)* Tap **Share** > **Add to Home Screen** on iOS to install NovaStream as a standalone Fullscreen App (PWA).
+3. *(Optional)* Tap **Share** > **Add to Home Screen** on iOS to install Caster as a standalone Fullscreen App (PWA).
 
 ### 📺 Apple TV (tvOS)
 1. Install the official **Tailscale** app on your Apple TV from the tvOS App Store.
