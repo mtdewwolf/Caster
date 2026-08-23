@@ -12,7 +12,8 @@
     "dev:web": "bun run --filter '@caster/web' dev",
     "build": "bun run --filter '@caster/web' build",
     "start": "bun run --filter '@caster/server' start",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
     "@types/bun": "latest",
