@@ -1,4 +1,5 @@
-import type { Library, MediaItem, SystemHardwareStatus, ScanStatus, BrowseResult } from './types';
+import type { Library, MediaItem, Series, SeriesSeason, SystemHardwareStatus, ScanStatus, BrowseResult } from './types';
+
 
 const API_BASE = '/api';
 
@@ -62,6 +63,46 @@ export const api = {
     const res = await fetch(`${API_BASE}/media/continue-watching`);
     const data = await res.json();
     return data.items || [];
+  },
+
+  async getProgress(status?: 'in_progress' | 'completed'): Promise<MediaItem[]> {
+    const query = new URLSearchParams();
+    if (status) query.set('status', status);
+    const res = await fetch(`${API_BASE}/media/progress?${query.toString()}`);
+    const data = await res.json();
+    return data.items || [];
+  },
+
+  async getSeries(params: { libraryId?: string; search?: string } = {}): Promise<Series[]> {
+    const query = new URLSearchParams();
+    if (params.libraryId) query.set('libraryId', params.libraryId);
+    if (params.search) query.set('search', params.search);
+
+    const res = await fetch(`${API_BASE}/series?${query.toString()}`);
+    const data = await res.json();
+    return data.items || [];
+  },
+
+  async getSeriesDetail(id: string): Promise<{ series: Series; seasons: SeriesSeason[] }> {
+    const res = await fetch(`${API_BASE}/series/${id}`);
+    return await res.json();
+  },
+
+  async getSeriesEpisodes(id: string): Promise<{ series: Series; items: MediaItem[] }> {
+    const res = await fetch(`${API_BASE}/series/${id}/episodes`);
+    return await res.json();
+  },
+
+  async markWatched(id: string): Promise<void> {
+    await fetch(`${API_BASE}/media/${id}/progress/watched`, { method: 'POST' });
+  },
+
+  async markUnwatched(id: string): Promise<void> {
+    await fetch(`${API_BASE}/media/${id}/progress/unwatched`, { method: 'POST' });
+  },
+
+  async removeProgress(id: string): Promise<void> {
+    await fetch(`${API_BASE}/media/${id}/progress`, { method: 'DELETE' });
   },
 
   async getMediaItem(id: string): Promise<MediaItem> {

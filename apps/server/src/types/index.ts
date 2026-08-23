@@ -94,6 +94,26 @@ export interface Library {
   created_at: string;
 }
 
+export interface Series {
+  id: string;
+  title: string;
+  library_id: string;
+  library_name?: string;
+  year?: number;
+  episode_count: number;
+  season_count: number;
+  total_duration: number;
+  watched_count: number;
+  poster_path?: string;
+}
+
+export interface SeriesSeason {
+  season_number: number;
+  episode_count: number;
+  total_duration: number;
+  watched_count: number;
+}
+
 export interface WatchProgress {
   id: string;
   media_id: string;
@@ -126,3 +146,20 @@ export interface SystemHardwareStatus {
   vaapiSupported: boolean;
   activeTranscodes: number;
 }
+
+export interface TranscodeCacheStatus {
+  cacheDir: string;
+  fileCount: number;
+  totalSizeBytes: number;
+  totalSizeMb: number;
+  maxAgeHours: number;
+  maxSizeMb: number;
+}
+
+export interface CacheCleanResult {
+  deletedCount: number;
+  bytesFreed: number;
+  remainingCount: number;
+  remainingBytes: number;
+}
+

@@ -67,6 +67,26 @@ export interface MediaItem {
   progress?: WatchProgress;
 }
 
+export interface Series {
+  id: string;
+  title: string;
+  library_id: string;
+  library_name?: string;
+  year?: number;
+  episode_count: number;
+  season_count: number;
+  total_duration: number;
+  watched_count: number;
+  poster_path?: string;
+}
+
+export interface SeriesSeason {
+  season_number: number;
+  episode_count: number;
+  total_duration: number;
+  watched_count: number;
+}
+
 export interface Library {
   id: string;
   name: string;

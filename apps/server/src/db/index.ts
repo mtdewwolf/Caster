@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite';
 import path from 'path';
 import fs from 'fs';
-import type { Library, MediaItem, WatchProgress } from '../types';
+import crypto from 'crypto';
+import type { Library, MediaItem, Series, SeriesSeason, WatchProgress } from '../types';
 
 // Ensure data directory exists
 const DATA_DIR = process.env.MEDIA_DATA_DIR || path.join(process.cwd(), 'data');
@@ -275,6 +276,34 @@ export const MediaModel = {
     };
   },
 
+  getProgressItems: (options: { status?: string; limit?: number } = {}): MediaItem[] => {
+    const whereClauses: string[] = [];
+    const params: any[] = [];
+
+    if (options.status === 'in_progress') {
+      whereClauses.push('p.completed = 0');
+    } else if (options.status === 'completed') {
+      whereClauses.push('p.completed = 1');
+    }
+
+    const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const limit = options.limit || 200;
+
+    const rows = db.query(`
+      SELECT m.*, l.name as library_name,
+             p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
+             p.progress_percent, p.completed, p.last_watched_at
+      FROM watch_progress p
+      JOIN media_items m ON p.media_id = m.id
+      JOIN libraries l ON m.library_id = l.id
+      ${whereStr}
+      ORDER BY p.last_watched_at DESC
+      LIMIT ?
+    `).all(...params, limit) as any[];
+
+    return rows.map(formatMediaRow);
+  },
+
   getContinueWatching: (limit: number = 10): MediaItem[] => {
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
@@ -368,6 +397,109 @@ export const MediaModel = {
     }
     const placeholders = currentFullPaths.map(() => '?').join(',');
     db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
+  },
+
+  getBySeries: (libraryId: string, seriesTitle: string): MediaItem[] => {
+    const rows = db.query(`
+      SELECT m.*, l.name as library_name,
+             p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
+             p.progress_percent, p.completed, p.last_watched_at
+      FROM media_items m
+      JOIN libraries l ON m.library_id = l.id
+      LEFT JOIN watch_progress p ON m.id = p.media_id
+      WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
+      ORDER BY COALESCE(m.season_number, 0) ASC, COALESCE(m.episode_number, 0) ASC, m.title ASC
+    `).all(libraryId, seriesTitle) as any[];
+
+    return rows.map(formatMediaRow);
+  }
+};
+
+const SERIES_GROUP_SELECT = `
+  SELECT m.library_id, l.name as library_name, m.series_title as title,
+         MIN(m.year) as year,
+         COUNT(m.id) as episode_count,
+         COUNT(DISTINCT m.season_number) as season_count,
+         COALESCE(SUM(m.duration), 0) as total_duration,
+         MAX(m.poster_path) as poster_path,
+         SUM(CASE WHEN p.completed = 1 THEN 1 ELSE 0 END) as watched_count
+  FROM media_items m
+  JOIN libraries l ON m.library_id = l.id
+  LEFT JOIN watch_progress p ON p.media_id = m.id
+  WHERE m.type = 'episode' AND m.series_title IS NOT NULL AND m.series_title != ''
+`;
+
+function seriesIdFor(libraryId: string, seriesTitle: string): string {
+  return `ser_${crypto.createHash('md5').update(`${libraryId}::${seriesTitle}`).digest('hex').substring(0, 16)}`;
+}
+
+function formatSeriesRow(row: any): Series {
+  return {
+    id: seriesIdFor(row.library_id, row.title),
+    title: row.title,
+    library_id: row.library_id,
+    library_name: row.library_name,
+    year: row.year ?? undefined,
+    episode_count: row.episode_count || 0,
+    season_count: row.season_count || 0,
+    total_duration: row.total_duration || 0,
+    watched_count: row.watched_count || 0,
+    poster_path: row.poster_path || undefined
+  };
+}
+
+export const SeriesModel = {
+  getAll: (options: { libraryId?: string; search?: string } = {}): Series[] => {
+    const clauses: string[] = [];
+    const params: any[] = [];
+
+    if (options.libraryId) {
+      clauses.push('m.library_id = ?');
+      params.push(options.libraryId);
+    }
+    if (options.search) {
+      clauses.push('m.series_title LIKE ?');
+      params.push(`%${options.search}%`);
+    }
+
+    const whereStr = clauses.length > 0 ? `AND ${clauses.join(' AND ')}` : '';
+    const rows = db.query(`
+      ${SERIES_GROUP_SELECT}
+      ${whereStr}
+      GROUP BY m.library_id, m.series_title
+      ORDER BY m.series_title COLLATE NOCASE ASC
+    `).all(...params) as any[];
+
+    return rows.map(formatSeriesRow);
+  },
+
+  getById: (id: string): Series | null => {
+    const rows = db.query(`
+      ${SERIES_GROUP_SELECT}
+      GROUP BY m.library_id, m.series_title
+    `).all() as any[];
+    return rows.map(formatSeriesRow).find((s) => s.id === id) || null;
+  },
+
+  getSeasons: (libraryId: string, seriesTitle: string): SeriesSeason[] => {
+    const rows = db.query(`
+      SELECT COALESCE(m.season_number, 0) as season_number,
+             COUNT(*) as episode_count,
+             COALESCE(SUM(m.duration), 0) as total_duration,
+             SUM(CASE WHEN p.completed = 1 THEN 1 ELSE 0 END) as watched_count
+      FROM media_items m
+      LEFT JOIN watch_progress p ON p.media_id = m.id
+      WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
+      GROUP BY COALESCE(m.season_number, 0)
+      ORDER BY season_number ASC
+    `).all(libraryId, seriesTitle) as any[];
+
+    return rows.map((row) => ({
+      season_number: row.season_number,
+      episode_count: row.episode_count,
+      total_duration: row.total_duration || 0,
+      watched_count: row.watched_count || 0
+    }));
   }
 };
 
@@ -413,6 +545,21 @@ export const ProgressModel = {
       completed: !!completed,
       last_watched_at: now
     };
+  },
+
+  markWatched: (mediaId: string) => {
+    const existing = db.query('SELECT duration_seconds FROM watch_progress WHERE media_id = ?').get(mediaId) as any;
+    const mediaRow = db.query('SELECT duration FROM media_items WHERE id = ?').get(mediaId) as any;
+
+    const duration = existing?.duration_seconds > 0
+      ? existing.duration_seconds
+      : (mediaRow?.duration || 0);
+
+    return ProgressModel.upsert(mediaId, duration, duration);
+  },
+
+  remove: (mediaId: string) => {
+    db.run('DELETE FROM watch_progress WHERE media_id = ?', [mediaId]);
   }
 };
 
