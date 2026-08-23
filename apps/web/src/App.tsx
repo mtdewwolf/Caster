@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2 } from 'lucide-react';
 import type { MediaItem, SystemHardwareStatus, ScanStatus } from './types';
 import { api } from './api';
@@ -8,8 +8,11 @@ import { MediaDetailModal } from './components/MediaDetailModal';
 import { VideoPlayer } from './components/VideoPlayer';
 import { SettingsModal } from './components/SettingsModal';
 
+const MEDIA_PAGE_SIZE = 50;
+
 export const App: React.FC = () => {
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
+  const [mediaTotal, setMediaTotal] = useState<number>(0);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [activeType, setActiveType] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -21,29 +24,64 @@ export const App: React.FC = () => {
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadingMore, setLoadingMore] = useState<boolean>(false);
+  const mediaRequestId = useRef(0);
 
   const loadMedia = async () => {
+    const requestId = ++mediaRequestId.current;
     setLoading(true);
+    setLoadingMore(false);
     try {
       const [mediaRes, cwRes, sysRes, scanRes] = await Promise.all([
         api.getMedia({
           type: activeType || undefined,
           search: debouncedSearchQuery || undefined,
-          resolution: selectedResolution || undefined
+          resolution: selectedResolution || undefined,
+          limit: MEDIA_PAGE_SIZE,
+          offset: 0
         }),
         api.getContinueWatching(),
         api.getSystemStatus(),
         api.getScanStatus()
       ]);
 
+      if (requestId !== mediaRequestId.current) return;
       setMediaItems(mediaRes.items || []);
+      setMediaTotal(mediaRes.total || 0);
       setContinueWatching(cwRes || []);
       setHardware(sysRes.hardware);
       setScanStatus(scanRes);
     } catch (err) {
       console.error('Error fetching media:', err);
     } finally {
-      setLoading(false);
+      if (requestId === mediaRequestId.current) setLoading(false);
+    }
+  };
+
+  const loadMoreMedia = async () => {
+    if (loadingMore || mediaItems.length >= mediaTotal) return;
+
+    const requestId = mediaRequestId.current;
+    setLoadingMore(true);
+    try {
+      const mediaRes = await api.getMedia({
+        type: activeType || undefined,
+        search: debouncedSearchQuery || undefined,
+        resolution: selectedResolution || undefined,
+        limit: MEDIA_PAGE_SIZE,
+        offset: mediaItems.length
+      });
+
+      if (requestId !== mediaRequestId.current) return;
+      setMediaItems((currentItems) => {
+        const currentIds = new Set(currentItems.map((item) => item.id));
+        return [...currentItems, ...(mediaRes.items || []).filter((item) => !currentIds.has(item.id))];
+      });
+      setMediaTotal(mediaRes.total || 0);
+    } catch (err) {
+      console.error('Error fetching more media:', err);
+    } finally {
+      if (requestId === mediaRequestId.current) setLoadingMore(false);
     }
   };
 
@@ -58,6 +96,20 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadMedia();
   }, [activeType, debouncedSearchQuery, selectedResolution]);
+
+  useEffect(() => {
+    if (!scanStatus?.isScanning) return;
+
+    const interval = setInterval(async () => {
+      try {
+        setScanStatus(await api.getScanStatus());
+      } catch (err) {
+        console.error('Error fetching scan status:', err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [scanStatus?.isScanning]);
 
   // Featured hero item (either the first continue watching or first media item)
   const heroItem = continueWatching[0] || mediaItems[0];
@@ -184,7 +236,9 @@ export const App: React.FC = () => {
             </div>
 
             <div className="text-xs text-slate-400">
-              Showing <span className="font-semibold text-slate-200">{mediaItems.length}</span> item(s)
+              Showing <span className="font-semibold text-slate-200">{mediaItems.length}</span>
+              {' of '}
+              <span className="font-semibold text-slate-200">{mediaTotal}</span> item(s)
             </div>
           </div>
 
@@ -211,15 +265,31 @@ export const App: React.FC = () => {
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {mediaItems.map((item) => (
-                <MediaCard
-                  key={item.id}
-                  item={item}
-                  onPlay={(i) => setPlayingItem(i)}
-                  onSelect={(i) => setSelectedItem(i)}
-                />
-              ))}
+            <div className="space-y-8">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                {mediaItems.map((item) => (
+                  <MediaCard
+                    key={item.id}
+                    item={item}
+                    onPlay={(i) => setPlayingItem(i)}
+                    onSelect={(i) => setSelectedItem(i)}
+                  />
+                ))}
+              </div>
+
+              {mediaItems.length < mediaTotal && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={loadMoreMedia}
+                    disabled={loadingMore}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-sm font-semibold text-white rounded-xl border border-white/10 transition-colors"
+                  >
+                    {loadingMore && <RefreshCw className="w-4 h-4 animate-spin" />}
+                    <span>{loadingMore ? 'Loading more...' : 'Load more'}</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
