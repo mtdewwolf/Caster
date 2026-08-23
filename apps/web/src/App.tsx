@@ -13,6 +13,7 @@ export const App: React.FC = () => {
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [activeType, setActiveType] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
   const [selectedResolution, setSelectedResolution] = useState<string>('');
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [playingItem, setPlayingItem] = useState<MediaItem | null>(null);
@@ -27,7 +28,7 @@ export const App: React.FC = () => {
       const [mediaRes, cwRes, sysRes, scanRes] = await Promise.all([
         api.getMedia({
           type: activeType || undefined,
-          search: searchQuery || undefined,
+          search: debouncedSearchQuery || undefined,
           resolution: selectedResolution || undefined
         }),
         api.getContinueWatching(),
@@ -47,8 +48,16 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  useEffect(() => {
     loadMedia();
-  }, [activeType, searchQuery, selectedResolution]);
+  }, [activeType, debouncedSearchQuery, selectedResolution]);
 
   // Featured hero item (either the first continue watching or first media item)
   const heroItem = continueWatching[0] || mediaItems[0];
