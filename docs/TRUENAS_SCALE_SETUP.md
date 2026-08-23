@@ -51,11 +51,15 @@ TrueNAS SCALE 24.10 (*Electric Eel*) supports native Docker Compose:
    ```
 3. Copy the `docker-compose.yml` file to `/mnt/tank/appdata/novastream/docker-compose.yml`.
 4. Adjust volume mount paths to match your ZFS pool name (e.g., replace `/mnt/tank/` with your pool path).
-5. Start the media server:
+5. Set a strong admin password. This protects library changes, scans, watch-progress writes, and server settings while leaving browsing and streaming public:
+   ```bash
+   export ADMIN_PASSWORD='replace-with-a-long-unique-password'
+   ```
+6. Start the media server:
    ```bash
    docker compose up -d
    ```
-6. Access the Web Player in your browser:
+7. Access the Web Player in your browser:
    ```text
    http://<YOUR-TRUENAS-IP>:3001
    ```
@@ -77,17 +81,20 @@ If you are using TrueNAS SCALE 24.04 (*Dragonfish*):
    - Mount 2: Host Path `/mnt/tank/media` -> Container Path `/media` (Read-Only)
 6. **GPU Configuration**:
    - Check **GPU Resource (Intel / NVIDIA)** or pass `/dev/dri` device.
-7. Click **Install**.
+7. **Environment Variable**:
+   - Set `ADMIN_PASSWORD` to a long, unique password.
+8. Click **Install**.
 
 ---
 
 ## 5. Initial Server Setup & First Scan
 
 1. Open `http://<TRUENAS-IP>:3001` in your browser.
-2. Click the ⚙️ **Settings** icon in the top navigation bar.
-3. Under **Media Libraries**, click **Add TrueNAS Media Folder**:
+2. Click **Admin login** and enter the configured `ADMIN_PASSWORD`.
+3. Click the ⚙️ **Settings** icon in the top navigation bar.
+4. Under **Media Libraries**, click **Add TrueNAS Media Folder**:
    - **Name**: e.g., `Movies 4K`
    - **Path**: `/media/movies`
    - **Type**: `Movies`
-4. Click **Add Library**. NovaStream will automatically scan the folder, extract metadata, generate posters, and index video streams.
-5. Under **Hardware Transcoding**, verify that your hardware accelerator (Intel QSV, VAAPI, or NVENC) is active.
+5. Click **Add Library**. NovaStream will automatically scan the folder, extract metadata, generate posters, and index video streams.
+6. Under **Hardware Transcoding**, verify that your hardware accelerator (Intel QSV, VAAPI, or NVENC) is active.

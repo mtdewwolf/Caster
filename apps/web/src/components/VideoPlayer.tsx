@@ -21,9 +21,10 @@ import { api } from '../api';
 interface VideoPlayerProps {
   item: MediaItem;
   onClose: () => void;
+  trackProgress: boolean;
 }
 
-export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose }) => {
+export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackProgress }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -114,10 +115,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose }) => {
 
   // Periodic progress tracking to server (every 5s)
   useEffect(() => {
+    if (!trackProgress) return;
+
+    const saveProgress = (position: number, videoDuration: number) => {
+      void api.updateProgress(item.id, position, videoDuration).catch((error) => {
+        console.warn('Failed to update watch progress:', error);
+      });
+    };
+
     const interval = setInterval(() => {
       const video = videoRef.current;
       if (video && video.currentTime > 0 && !video.paused) {
-        api.updateProgress(item.id, video.currentTime, video.duration || item.duration);
+        saveProgress(video.currentTime, video.duration || item.duration);
       }
     }, 5000);
 
@@ -125,10 +134,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose }) => {
       clearInterval(interval);
       const video = videoRef.current;
       if (video && video.currentTime > 0) {
-        api.updateProgress(item.id, video.currentTime, video.duration || item.duration);
+        saveProgress(video.currentTime, video.duration || item.duration);
       }
     };
-  }, [item.id, item.duration]);
+  }, [item.id, item.duration, trackProgress]);
 
   // Handle Controls auto-hide
   const handleMouseMove = useCallback(() => {
