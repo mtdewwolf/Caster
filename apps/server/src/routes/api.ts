@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
+import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
 import { transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 
@@ -552,7 +553,7 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
 
 apiRouter.get('/media/:id/thumbnail', (c) => {
   const id = c.req.param('id');
-  const thumbPath = path.join(process.cwd(), 'data', 'thumbnails', `${id}.jpg`);
+  const thumbPath = getThumbnailPath(id);
 
   if (fs.existsSync(thumbPath)) {
     const file = Bun.file(thumbPath);
@@ -565,6 +566,28 @@ apiRouter.get('/media/:id/thumbnail', (c) => {
   }
 
   return c.text('Thumbnail not found', 404);
+});
+
+apiRouter.post('/media/:id/thumbnail', async (c) => {
+  const id = c.req.param('id');
+  const item = MediaModel.getById(id);
+  if (!item) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+
+  const thumbnail = await ensureMediaThumbnail(item, { force: true });
+  if (!thumbnail.ok) {
+    if (thumbnail.reason === 'unsupported_media') {
+      return c.json({ error: 'Thumbnails are not supported for this media type' }, 400);
+    }
+    if (thumbnail.reason === 'source_not_found') {
+      return c.json({ error: 'Media file not found' }, 404);
+    }
+    return c.json({ error: 'Thumbnail generation failed' }, 500);
+  }
+
+  MediaModel.updatePosterPath(id, thumbnail.url);
+  return c.json({ success: true, thumbnailUrl: thumbnail.url });
 });
 
 apiRouter.get('/media/:id/subtitles/:index', async (c) => {

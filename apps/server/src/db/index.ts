@@ -439,6 +439,10 @@ export const MediaModel = {
     });
   },
 
+  updatePosterPath: (id: string, posterPath: string) => {
+    db.run('UPDATE media_items SET poster_path = ? WHERE id = ?', [posterPath, id]);
+  },
+
   deleteNotFoundInPaths: (libraryId: string, currentFullPaths: string[]) => {
     if (currentFullPaths.length === 0) {
       db.run('DELETE FROM media_items WHERE library_id = ?', [libraryId]);
