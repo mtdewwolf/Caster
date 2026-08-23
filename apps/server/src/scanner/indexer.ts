@@ -1,15 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { extractMediaMetadata, generateThumbnail, parseFilename } from './metadata';
+import { extractMediaMetadata, parseFilename } from './metadata';
 import { EXTERNAL_SUBTITLE_INDEX_BASE, findExternalSubtitles } from './subtitles';
+import { ensureMediaThumbnail } from './thumbnails';
 import { ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
 import type { Library, MediaItem } from '../types';
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.aac', '.m4a', '.wav', '.ogg', '.opus', '.wma', '.alac']);
-
-const THUMBNAIL_DIR = process.env.THUMBNAILS_DIR || path.join(process.cwd(), 'data', 'thumbnails');
 
 export interface ScanStatus {
   isScanning: boolean;
@@ -153,19 +152,14 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
 
   const now = new Date().toISOString();
 
-  let posterPath: string | undefined = undefined;
-  // If thumbnail exists or we can generate one
-  const targetThumbPath = path.join(THUMBNAIL_DIR, `${fileId}.jpg`);
-  if (fs.existsSync(targetThumbPath)) {
-    posterPath = `/api/media/${fileId}/thumbnail`;
-  } else if (parsed.type === 'movie' || parsed.type === 'episode' || parsed.type === 'video') {
-    // Generate thumbnail at 20% into duration or 30s
-    const seekTime = metadata?.duration && metadata.duration > 60 ? Math.min(120, Math.floor(metadata.duration * 0.15)) : 10;
-    const generated = await generateThumbnail(filePath, targetThumbPath, seekTime);
-    if (generated) {
-      posterPath = `/api/media/${fileId}/thumbnail`;
-    }
-  }
+  // Existing files are left alone; missing thumbnails are retried on every scan.
+  const thumbnail = await ensureMediaThumbnail({
+    id: fileId,
+    full_path: filePath,
+    type: parsed.type,
+    duration: metadata?.duration || 0
+  });
+  const posterPath = thumbnail.ok ? thumbnail.url : undefined;
 
   const mediaItem: Omit<MediaItem, 'progress' | 'library_name'> = {
     id: fileId,
