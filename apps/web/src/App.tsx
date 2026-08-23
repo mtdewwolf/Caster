@@ -16,6 +16,7 @@ export const App: React.FC = () => {
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [activeType, setActiveType] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
   const [selectedResolution, setSelectedResolution] = useState<string>('');
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [playingItem, setPlayingItem] = useState<MediaItem | null>(null);
@@ -34,7 +35,7 @@ export const App: React.FC = () => {
       const [mediaRes, cwRes, sysRes, scanRes] = await Promise.all([
         api.getMedia({
           type: activeType || undefined,
-          search: searchQuery || undefined,
+          search: debouncedSearchQuery || undefined,
           resolution: selectedResolution || undefined,
           limit: MEDIA_PAGE_SIZE,
           offset: 0
@@ -65,7 +66,7 @@ export const App: React.FC = () => {
     try {
       const mediaRes = await api.getMedia({
         type: activeType || undefined,
-        search: searchQuery || undefined,
+        search: debouncedSearchQuery || undefined,
         resolution: selectedResolution || undefined,
         limit: MEDIA_PAGE_SIZE,
         offset: mediaItems.length
@@ -85,8 +86,16 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  useEffect(() => {
     loadMedia();
-  }, [activeType, searchQuery, selectedResolution]);
+  }, [activeType, debouncedSearchQuery, selectedResolution]);
 
   useEffect(() => {
     if (!scanStatus?.isScanning) return;

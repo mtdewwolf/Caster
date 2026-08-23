@@ -83,6 +83,48 @@ describe('Media Server Tests', () => {
       const completedProgress = ProgressModel.upsert(mediaId, 580, 600); // >92%
       expect(completedProgress.completed).toBe(true);
     });
+
+    it('should keep full-text title search in sync with media changes', () => {
+      const suffix = Date.now().toString();
+      const libId = `test_lib_search_${suffix}`;
+      const mediaId = `media_search_${suffix}`;
+      const fullPath = `/tmp/test_search_${suffix}/Interstellar.mkv`;
+
+      LibraryModel.create({
+        id: libId,
+        name: 'Search Test',
+        path: `/tmp/test_search_${suffix}`,
+        type: 'movies',
+        created_at: new Date().toISOString()
+      });
+
+      const mediaItem = {
+        id: mediaId,
+        library_id: libId,
+        title: 'Interstellar',
+        original_filename: 'Interstellar.mkv',
+        relative_path: 'Interstellar.mkv',
+        full_path: fullPath,
+        type: 'movie',
+        duration: 600,
+        size_bytes: 1024000,
+        format: 'mkv',
+        is_hdr: false,
+        streams_json: '[]',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      MediaModel.upsert(mediaItem);
+      expect(MediaModel.getAll({ search: 'interst' }).items.map((item) => item.id)).toContain(mediaId);
+
+      MediaModel.upsert({ ...mediaItem, title: 'Arrival' });
+      expect(MediaModel.getAll({ search: 'interst' }).items.map((item) => item.id)).not.toContain(mediaId);
+      expect(MediaModel.getAll({ search: 'arriv' }).items.map((item) => item.id)).toContain(mediaId);
+
+      LibraryModel.delete(libId);
+      expect(MediaModel.getAll({ search: 'arriv' }).items.map((item) => item.id)).not.toContain(mediaId);
+    });
   });
 
   describe('Transcoding Engine & HLS', () => {
