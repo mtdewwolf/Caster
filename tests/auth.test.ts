@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import { authRouter, getCurrentUserId, requireAdminForMutations } from '../apps/server/src/auth';
+import { apiRouter } from '../apps/server/src/routes/api';
 
 describe('Admin authentication', () => {
   const originalPassword = process.env.ADMIN_PASSWORD;
@@ -27,6 +28,7 @@ describe('Admin authentication', () => {
   app.get('/api/progress-owner', (c) => c.json({ userId: getCurrentUserId(c) }));
   app.post('/api/libraries', (c) => c.json({ created: true }));
   app.delete('/api/libraries/:id', (c) => c.json({ deleted: c.req.param('id') }));
+  app.route('/api', apiRouter);
 
   it('keeps read routes public and rejects anonymous mutations', async () => {
     const readResponse = await app.request('/api/libraries');
@@ -105,5 +107,19 @@ describe('Admin authentication', () => {
 
     expect(logoutResponse.status).toBe(200);
     expect(writeResponse.status).toBe(401);
+  });
+
+  it('protects the transcode kill switch as an admin mutation', async () => {
+    const anonymousResponse = await app.request('/api/system/transcodes/kill', {
+      method: 'POST'
+    });
+    const adminResponse = await app.request('/api/system/transcodes/kill', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiToken}` }
+    });
+
+    expect(anonymousResponse.status).toBe(401);
+    expect(adminResponse.status).toBe(200);
+    expect(await adminResponse.json()).toMatchObject({ success: true, killed: 0 });
   });
 });

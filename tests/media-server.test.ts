@@ -1,9 +1,15 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import { Database } from 'bun:sqlite';
 import { parseFilename } from '../apps/server/src/scanner/metadata';
-import { transcoder, TRANSCODE_CACHE_DIR } from '../apps/server/src/transcoder/engine';
+import {
+  transcoder,
+  TRANSCODE_CACHE_DIR,
+  TRANSCODE_MAX_CONCURRENT,
+  TranscodeCapacityError,
+  TranscodeKilledError
+} from '../apps/server/src/transcoder/engine';
 import { initDatabase, LibraryModel, MediaModel, migrateWatchProgressToUsers, ProgressModel, SeriesModel } from '../apps/server/src/db';
 
 describe('Media Server Tests', () => {
@@ -347,6 +353,40 @@ describe('Media Server Tests', () => {
       expect(variant).toContain('/api/media/item123/hls/720p/segment-0.ts');
       expect(variant).toContain('#EXT-X-ENDLIST');
     });
+
+    it('should cap concurrent jobs and terminate every active transcode', async () => {
+      const engine = transcoder as any;
+      const originalTranscodeSegment = engine.transcodeSegment;
+      const resolvers: Array<(buffer: Buffer) => void> = [];
+      const requestId = `session_limit_${Date.now()}`;
+
+      engine.transcodeSegment = () => new Promise<Buffer>((resolve) => resolvers.push(resolve));
+
+      try {
+        const activeRequests = Array.from({ length: TRANSCODE_MAX_CONCURRENT }, (_, index) =>
+          transcoder
+            .getHlsSegment('/unused', `${requestId}_${index}`, '720p', index)
+            .catch((err) => err)
+        );
+
+        expect(transcoder.getTranscodeStatus().activeTranscodes).toBe(TRANSCODE_MAX_CONCURRENT);
+
+        const rejected = await transcoder
+          .getHlsSegment('/unused', `${requestId}_over_limit`, '720p', 999)
+          .catch((err) => err);
+        expect(rejected).toBeInstanceOf(TranscodeCapacityError);
+
+        expect(transcoder.killAllTranscodes()).toBe(TRANSCODE_MAX_CONCURRENT);
+        resolvers.forEach((resolve) => resolve(Buffer.from('terminated')));
+
+        const terminated = await Promise.all(activeRequests);
+        expect(terminated.every((result) => result instanceof TranscodeKilledError)).toBe(true);
+        expect(transcoder.getTranscodeStatus().activeTranscodes).toBe(0);
+      } finally {
+        engine.transcodeSegment = originalTranscodeSegment;
+        resolvers.forEach((resolve) => resolve(Buffer.from('cleanup')));
+      }
+    });
   });
 
   describe('Transcode Cache Eviction Policy', () => {
@@ -354,6 +394,10 @@ describe('Media Server Tests', () => {
       if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
         fs.mkdirSync(TRANSCODE_CACHE_DIR, { recursive: true });
       }
+      transcoder.clearAllCache();
+    });
+
+    afterEach(() => {
       transcoder.clearAllCache();
     });
 

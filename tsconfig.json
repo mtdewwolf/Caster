@@ -7,5 +7,6 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["bun-types"]
-  }
+  },
+  "exclude": ["data", "**/dist", "node_modules"]
 }
