@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
+import { Database } from 'bun:sqlite';
 import { parseFilename } from '../apps/server/src/scanner/metadata';
 import {
   transcoder,
@@ -9,7 +10,7 @@ import {
   TranscodeCapacityError,
   TranscodeKilledError
 } from '../apps/server/src/transcoder/engine';
-import { initDatabase, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../apps/server/src/db';
+import { initDatabase, LibraryModel, MediaModel, migrateWatchProgressToUsers, ProgressModel, SeriesModel } from '../apps/server/src/db';
 
 describe('Media Server Tests', () => {
   beforeEach(() => {
@@ -40,6 +41,48 @@ describe('Media Server Tests', () => {
   });
 
   describe('Database Models', () => {
+    it('should migrate legacy progress to the admin user and allow per-user rows', () => {
+      const legacyDb = new Database(':memory:');
+      legacyDb.run('CREATE TABLE media_items (id TEXT PRIMARY KEY)');
+      legacyDb.run(`
+        CREATE TABLE watch_progress (
+          id TEXT PRIMARY KEY,
+          media_id TEXT UNIQUE NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+          position_seconds REAL NOT NULL DEFAULT 0,
+          duration_seconds REAL NOT NULL DEFAULT 0,
+          progress_percent REAL NOT NULL DEFAULT 0,
+          completed INTEGER NOT NULL DEFAULT 0,
+          last_watched_at TEXT NOT NULL
+        )
+      `);
+      legacyDb.run('INSERT INTO media_items (id) VALUES (?)', ['legacy-media']);
+      legacyDb.run(`
+        INSERT INTO watch_progress VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, ['prog_legacy', 'legacy-media', 120, 600, 20, 0, new Date().toISOString()]);
+
+      migrateWatchProgressToUsers(legacyDb);
+
+      const columns = legacyDb.query('PRAGMA table_info(watch_progress)').all() as Array<{ name: string }>;
+      const migrated = legacyDb.query(`
+        SELECT user_id, media_id, position_seconds FROM watch_progress
+      `).get() as { user_id: string; media_id: string; position_seconds: number };
+      legacyDb.run(`
+        INSERT INTO watch_progress VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, ['prog_second', 'second-user', 'legacy-media', 240, 600, 40, 0, new Date().toISOString()]);
+      const rowCount = legacyDb.query(`
+        SELECT COUNT(*) as count FROM watch_progress WHERE media_id = ?
+      `).get('legacy-media') as { count: number };
+
+      expect(columns.map((column) => column.name)).toContain('user_id');
+      expect(migrated).toMatchObject({
+        user_id: 'admin',
+        media_id: 'legacy-media',
+        position_seconds: 120
+      });
+      expect(rowCount.count).toBe(2);
+      legacyDb.close();
+    });
+
     it('should create and retrieve libraries', () => {
       const id = `test_lib_${Date.now()}`;
       LibraryModel.create({
@@ -83,13 +126,57 @@ describe('Media Server Tests', () => {
         updated_at: new Date().toISOString()
       });
 
-      const progress = ProgressModel.upsert(mediaId, 120, 600); // 20%
+      const progress = ProgressModel.upsert('test-user', mediaId, 120, 600); // 20%
+      expect(progress.user_id).toBe('test-user');
       expect(progress.position_seconds).toBe(120);
       expect(progress.progress_percent).toBe(20);
       expect(progress.completed).toBe(false);
 
-      const completedProgress = ProgressModel.upsert(mediaId, 580, 600); // >92%
+      const completedProgress = ProgressModel.upsert('test-user', mediaId, 580, 600); // >92%
       expect(completedProgress.completed).toBe(true);
+    });
+
+    it('should isolate progress and continue-watching items by user', () => {
+      const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const libId = `test_lib_users_${suffix}`;
+      const mediaId = `media_users_${suffix}`;
+
+      LibraryModel.create({
+        id: libId,
+        name: 'Multi-user Progress',
+        path: `/tmp/test_users_${suffix}`,
+        type: 'movies',
+        created_at: new Date().toISOString()
+      });
+      MediaModel.upsert({
+        id: mediaId,
+        library_id: libId,
+        title: 'Shared Movie',
+        original_filename: 'Shared.Movie.mkv',
+        relative_path: 'Shared.Movie.mkv',
+        full_path: `/tmp/test_users_${suffix}/Shared.Movie.mkv`,
+        type: 'movie',
+        duration: 600,
+        size_bytes: 1024000,
+        format: 'mkv',
+        is_hdr: false,
+        streams_json: '[]',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      const aliceProgress = ProgressModel.upsert('alice', mediaId, 120, 600);
+      const bobProgress = ProgressModel.upsert('bob', mediaId, 300, 600);
+
+      expect(aliceProgress.id).not.toBe(bobProgress.id);
+      expect(MediaModel.getById(mediaId, 'alice')?.progress?.position_seconds).toBe(120);
+      expect(MediaModel.getById(mediaId, 'bob')?.progress?.position_seconds).toBe(300);
+      expect(MediaModel.getContinueWatching('alice').find((item) => item.id === mediaId)?.progress?.user_id).toBe('alice');
+      expect(MediaModel.getContinueWatching('bob').find((item) => item.id === mediaId)?.progress?.user_id).toBe('bob');
+
+      ProgressModel.remove('alice', mediaId);
+      expect(MediaModel.getById(mediaId, 'alice')?.progress).toBeUndefined();
+      expect(MediaModel.getById(mediaId, 'bob')?.progress?.position_seconds).toBe(300);
     });
 
     it('should keep full-text title search in sync with media changes', () => {
@@ -124,14 +211,14 @@ describe('Media Server Tests', () => {
       };
 
       MediaModel.upsert(mediaItem);
-      expect(MediaModel.getAll({ search: 'interst' }).items.map((item) => item.id)).toContain(mediaId);
+      expect(MediaModel.getAll('test-user', { search: 'interst' }).items.map((item) => item.id)).toContain(mediaId);
 
       MediaModel.upsert({ ...mediaItem, title: 'Arrival' });
-      expect(MediaModel.getAll({ search: 'interst' }).items.map((item) => item.id)).not.toContain(mediaId);
-      expect(MediaModel.getAll({ search: 'arriv' }).items.map((item) => item.id)).toContain(mediaId);
+      expect(MediaModel.getAll('test-user', { search: 'interst' }).items.map((item) => item.id)).not.toContain(mediaId);
+      expect(MediaModel.getAll('test-user', { search: 'arriv' }).items.map((item) => item.id)).toContain(mediaId);
 
       LibraryModel.delete(libId);
-      expect(MediaModel.getAll({ search: 'arriv' }).items.map((item) => item.id)).not.toContain(mediaId);
+      expect(MediaModel.getAll('test-user', { search: 'arriv' }).items.map((item) => item.id)).not.toContain(mediaId);
     });
   });
 
@@ -177,10 +264,10 @@ describe('Media Server Tests', () => {
         });
       }
 
-      ProgressModel.markWatched(episodes[0].id);
-      ProgressModel.markWatched(episodes[1].id);
+      ProgressModel.markWatched('test-user', episodes[0].id);
+      ProgressModel.markWatched('test-user', episodes[1].id);
 
-      const all = SeriesModel.getAll({ libraryId: libId });
+      const all = SeriesModel.getAll('test-user', { libraryId: libId });
       expect(all.length).toBe(1);
 
       const series = all[0];
@@ -188,13 +275,14 @@ describe('Media Server Tests', () => {
       expect(series.episode_count).toBe(3);
       expect(series.season_count).toBe(2);
       expect(series.watched_count).toBe(2);
+      expect(SeriesModel.getAll('other-user', { libraryId: libId })[0].watched_count).toBe(0);
       expect(series.total_duration).toBe(8100);
 
-      const fetched = SeriesModel.getById(series.id);
+      const fetched = SeriesModel.getById(series.id, 'test-user');
       expect(fetched).not.toBeNull();
       expect(fetched?.title).toBe('Breaking Bad');
 
-      const seasons = SeriesModel.getSeasons(libId, 'Breaking Bad');
+      const seasons = SeriesModel.getSeasons(libId, 'Breaking Bad', 'test-user');
       expect(seasons.length).toBe(2);
       expect(seasons[0].season_number).toBe(1);
       expect(seasons[0].episode_count).toBe(2);
@@ -202,11 +290,11 @@ describe('Media Server Tests', () => {
       expect(seasons[1].season_number).toBe(2);
       expect(seasons[1].watched_count).toBe(0);
 
-      const eps = MediaModel.getBySeries(libId, 'Breaking Bad');
+      const eps = MediaModel.getBySeries(libId, 'Breaking Bad', 'test-user');
       expect(eps.length).toBe(3);
       expect(eps.map((e) => e.id)).toEqual([episodes[0].id, episodes[1].id, episodes[2].id]);
 
-      const searched = SeriesModel.getAll({ search: 'breaking' });
+      const searched = SeriesModel.getAll('test-user', { search: 'breaking' });
       expect(searched.some((s) => s.id === series.id)).toBe(true);
     });
 
@@ -237,7 +325,7 @@ describe('Media Server Tests', () => {
         updated_at: new Date().toISOString()
       });
 
-      const all = SeriesModel.getAll({ libraryId: libId });
+      const all = SeriesModel.getAll('test-user', { libraryId: libId });
       expect(all.length).toBe(0);
     });
   });
