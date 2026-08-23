@@ -1,7 +1,17 @@
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import type { CacheCleanResult, HardwareAccelType, QualityProfile, SystemHardwareStatus, TranscodeCacheStatus, TranscodeQuality } from '../types';
+import crypto from 'crypto';
+import type {
+  ActiveTranscodeSession,
+  CacheCleanResult,
+  HardwareAccelType,
+  QualityProfile,
+  SystemHardwareStatus,
+  TranscodeCacheStatus,
+  TranscodeQuality,
+  TranscodeSessionStatus
+} from '../types';
 
 export const QUALITY_PROFILES: Record<TranscodeQuality, QualityProfile> = {
   original: {
@@ -53,15 +63,43 @@ export const QUALITY_PROFILES: Record<TranscodeQuality, QualityProfile> = {
 
 const HLS_SEGMENT_DURATION = 6; // 6 seconds per segment
 export const TRANSCODE_CACHE_DIR = process.env.TRANSCODE_CACHE_DIR || path.join(process.cwd(), 'data', 'transcode_cache');
-export const TRANSCODE_CACHE_MAX_AGE_HOURS = parseInt(process.env.TRANSCODE_CACHE_MAX_AGE_HOURS || '24', 10);
-export const TRANSCODE_CACHE_MAX_SIZE_MB = parseInt(process.env.TRANSCODE_CACHE_MAX_SIZE_MB || '10000', 10); // 10 GB
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+export const TRANSCODE_MAX_CONCURRENT = positiveIntegerEnv('TRANSCODE_MAX_CONCURRENT', 2);
+export const TRANSCODE_CACHE_MAX_AGE_HOURS = positiveIntegerEnv('TRANSCODE_CACHE_MAX_AGE_HOURS', 24);
+export const TRANSCODE_CACHE_MAX_SIZE_MB = positiveIntegerEnv('TRANSCODE_CACHE_MAX_SIZE_MB', 10000); // 10 GB
 
 if (!fs.existsSync(TRANSCODE_CACHE_DIR)) {
   fs.mkdirSync(TRANSCODE_CACHE_DIR, { recursive: true });
 }
 
+interface ActiveTranscodeJob extends ActiveTranscodeSession {
+  process?: ChildProcessWithoutNullStreams;
+  killed: boolean;
+}
+
+export class TranscodeCapacityError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Transcode concurrency limit reached (${limit})`);
+    this.name = 'TranscodeCapacityError';
+  }
+}
+
+export class TranscodeKilledError extends Error {
+  constructor() {
+    super('Transcode was terminated by an administrator');
+    this.name = 'TranscodeKilledError';
+  }
+}
+
 class TranscodingEngine {
-  private activeJobs = 0;
+  private readonly activeJobs = new Map<string, ActiveTranscodeJob>();
+  private readonly inFlightSegments = new Map<string, Promise<Buffer>>();
+  private readonly cacheWrites = new Set<string>();
   private hardwareStatus: SystemHardwareStatus | null = null;
   private cleanupTimer: any = null;
 
@@ -132,7 +170,8 @@ class TranscodingEngine {
       qsvSupported,
       nvencSupported,
       vaapiSupported,
-      activeTranscodes: this.activeJobs
+      activeTranscodes: this.activeJobs.size,
+      maxConcurrentTranscodes: TRANSCODE_MAX_CONCURRENT
     };
 
     return this.hardwareStatus;
@@ -142,8 +181,33 @@ class TranscodingEngine {
     if (!this.hardwareStatus) {
       return this.detectHardware();
     }
-    this.hardwareStatus.activeTranscodes = this.activeJobs;
+    this.hardwareStatus.activeTranscodes = this.activeJobs.size;
+    this.hardwareStatus.maxConcurrentTranscodes = TRANSCODE_MAX_CONCURRENT;
     return this.hardwareStatus;
+  }
+
+  public getTranscodeStatus(): TranscodeSessionStatus {
+    return {
+      activeTranscodes: this.activeJobs.size,
+      maxConcurrentTranscodes: TRANSCODE_MAX_CONCURRENT,
+      acceptingTranscodes: this.activeJobs.size < TRANSCODE_MAX_CONCURRENT,
+      sessions: Array.from(this.activeJobs.values(), ({ process: _process, killed: _killed, ...session }) => session)
+    };
+  }
+
+  public killAllTranscodes(): number {
+    const jobs = Array.from(this.activeJobs.values());
+    for (const job of jobs) {
+      job.killed = true;
+      if (job.process && job.process.exitCode === null && job.process.signalCode === null) {
+        try {
+          job.process.kill('SIGKILL');
+        } catch (err) {
+          console.warn(`Failed to terminate transcode ${job.id}:`, err);
+        }
+      }
+    }
+    return jobs.length;
   }
 
   public setPreferredAccel(type: HardwareAccelType) {
@@ -264,7 +328,14 @@ class TranscodingEngine {
       try {
         const stat = fs.statSync(fullPath);
         // Evict expired files first (TTL)
-        if (now - stat.mtimeMs > maxAgeMs) {
+        if (this.cacheWrites.has(fullPath)) {
+          cacheFiles.push({
+            name,
+            fullPath,
+            size: stat.size,
+            mtime: stat.mtimeMs
+          });
+        } else if (now - stat.mtimeMs > maxAgeMs) {
           fs.unlinkSync(fullPath);
           deletedCount++;
           bytesFreed += stat.size;
@@ -290,6 +361,7 @@ class TranscodingEngine {
 
       for (const file of cacheFiles) {
         if (currentTotalBytes <= maxSizeBytes) break;
+        if (this.cacheWrites.has(file.fullPath)) continue;
         try {
           fs.unlinkSync(file.fullPath);
           deletedCount++;
@@ -336,24 +408,80 @@ class TranscodingEngine {
       // Update access time for LRU tracking
       try {
         const now = new Date();
-        fs.utimes(cacheFile, now, now, () => {});
+        fs.utimesSync(cacheFile, now, now);
       } catch {}
       return fs.readFileSync(cacheFile);
     }
+
+    // Coalesce simultaneous requests for the same segment into one FFmpeg job.
+    const existing = this.inFlightSegments.get(cacheKey);
+    if (existing) return existing;
+
+    const request = this.runTranscode(filePath, mediaId, quality, seq, cacheFile);
+    this.inFlightSegments.set(cacheKey, request);
+
+    try {
+      return await request;
+    } finally {
+      if (this.inFlightSegments.get(cacheKey) === request) {
+        this.inFlightSegments.delete(cacheKey);
+      }
+    }
+  }
+
+  private async runTranscode(
+    filePath: string,
+    mediaId: string,
+    quality: TranscodeQuality,
+    seq: number,
+    cacheFile: string
+  ): Promise<Buffer> {
+    if (this.activeJobs.size >= TRANSCODE_MAX_CONCURRENT) {
+      throw new TranscodeCapacityError(TRANSCODE_MAX_CONCURRENT);
+    }
+
+    const job: ActiveTranscodeJob = {
+      id: crypto.randomUUID(),
+      mediaId,
+      quality,
+      sequence: seq,
+      startedAt: new Date().toISOString(),
+      killed: false
+    };
+    this.activeJobs.set(job.id, job);
 
     const startTime = seq * HLS_SEGMENT_DURATION;
     const profile = QUALITY_PROFILES[quality] || QUALITY_PROFILES['720p'];
     const accel = this.hardwareStatus?.accelType || 'none';
 
-    this.activeJobs++;
-
     try {
-      const buffer = await this.transcodeSegment(filePath, startTime, HLS_SEGMENT_DURATION, profile, accel);
-      // Asynchronously cache segment
-      fs.writeFile(cacheFile, buffer, () => {});
+      const buffer = await this.transcodeSegment(filePath, startTime, HLS_SEGMENT_DURATION, profile, accel, job);
+      if (job.killed) throw new TranscodeKilledError();
+
+      // A completed write immediately enforces the cache budget, so growth is
+      // bounded between periodic maintenance runs as well as across restarts.
+      this.cacheWrites.add(cacheFile);
+      try {
+        await fs.promises.writeFile(cacheFile, buffer);
+        if (job.killed) {
+          await fs.promises.unlink(cacheFile).catch(() => {});
+          throw new TranscodeKilledError();
+        }
+      } catch (err) {
+        await fs.promises.unlink(cacheFile).catch(() => {});
+        if (err instanceof TranscodeKilledError) throw err;
+        console.warn(`Failed to cache transcode segment ${cacheFile}:`, err);
+      } finally {
+        this.cacheWrites.delete(cacheFile);
+      }
+      try {
+        this.cleanCache();
+      } catch (err) {
+        console.warn('Failed to enforce transcode cache budget:', err);
+      }
       return buffer;
     } finally {
-      this.activeJobs = Math.max(0, this.activeJobs - 1);
+      this.activeJobs.delete(job.id);
     }
   }
 
@@ -362,9 +490,15 @@ class TranscodingEngine {
     startTime: number,
     duration: number,
     profile: QualityProfile,
-    accel: HardwareAccelType
+    accel: HardwareAccelType,
+    job: ActiveTranscodeJob
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
+      if (job.killed) {
+        reject(new TranscodeKilledError());
+        return;
+      }
+
       const args: string[] = ['-hide_banner', '-loglevel', 'error'];
 
       // Seek before input for super fast keyframe seeking
@@ -431,8 +565,17 @@ class TranscodingEngine {
       );
 
       const ffmpeg = spawn('ffmpeg', args);
+      job.process = ffmpeg;
       const chunks: Buffer[] = [];
       let errLog = '';
+      let settled = false;
+
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (job.process === ffmpeg) job.process = undefined;
+        callback();
+      };
 
       ffmpeg.stdout.on('data', (chunk) => {
         chunks.push(chunk);
@@ -443,23 +586,29 @@ class TranscodingEngine {
       });
 
       ffmpeg.on('close', (code) => {
+        if (job.killed) {
+          finish(() => reject(new TranscodeKilledError()));
+          return;
+        }
         if (code === 0 && chunks.length > 0) {
-          resolve(Buffer.concat(chunks));
+          finish(() => resolve(Buffer.concat(chunks)));
         } else {
           // If hardware failed, try CPU fallback
           if (accel !== 'none') {
             console.warn(`Hardware accel (${accel}) segment failed, falling back to CPU. Error:`, errLog);
-            this.transcodeSegment(filePath, startTime, duration, profile, 'none')
-              .then(resolve)
-              .catch(reject);
+            finish(() => {
+              this.transcodeSegment(filePath, startTime, duration, profile, 'none', job)
+                .then(resolve)
+                .catch(reject);
+            });
           } else {
-            reject(new Error(`FFmpeg transcoding failed (code ${code}): ${errLog}`));
+            finish(() => reject(new Error(`FFmpeg transcoding failed (code ${code}): ${errLog}`)));
           }
         }
       });
 
       ffmpeg.on('error', (err) => {
-        reject(err);
+        finish(() => reject(job.killed ? new TranscodeKilledError() : err));
       });
     });
   }

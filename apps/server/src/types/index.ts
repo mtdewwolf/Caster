@@ -117,6 +117,7 @@ export interface SeriesSeason {
 
 export interface WatchProgress {
   id: string;
+  user_id: string;
   media_id: string;
   position_seconds: number;
   duration_seconds: number;
@@ -146,6 +147,22 @@ export interface SystemHardwareStatus {
   nvencSupported: boolean;
   vaapiSupported: boolean;
   activeTranscodes: number;
+  maxConcurrentTranscodes: number;
+}
+
+export interface ActiveTranscodeSession {
+  id: string;
+  mediaId: string;
+  quality: TranscodeQuality;
+  sequence: number;
+  startedAt: string;
+}
+
+export interface TranscodeSessionStatus {
+  activeTranscodes: number;
+  maxConcurrentTranscodes: number;
+  acceptingTranscodes: boolean;
+  sessions: ActiveTranscodeSession[];
 }
 
 export interface TranscodeCacheStatus {

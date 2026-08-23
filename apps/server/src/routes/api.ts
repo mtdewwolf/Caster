@@ -7,8 +7,9 @@ import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesM
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
 import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
-import { transcoder } from '../transcoder/engine';
+import { TranscodeCapacityError, TranscodeKilledError, transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
+import { getCurrentUserId } from '../auth';
 
 export const apiRouter = new Hono();
 
@@ -332,7 +333,7 @@ apiRouter.get('/media', (c) => {
   const limit = query.limit ? parseInt(query.limit, 10) : 50;
   const offset = query.offset ? parseInt(query.offset, 10) : 0;
 
-  const result = MediaModel.getAll({
+  const result = MediaModel.getAll(getCurrentUserId(c), {
     libraryId,
     type,
     search,
@@ -346,7 +347,7 @@ apiRouter.get('/media', (c) => {
 });
 
 apiRouter.get('/media/continue-watching', (c) => {
-  const items = MediaModel.getContinueWatching(12);
+  const items = MediaModel.getContinueWatching(getCurrentUserId(c), 12);
   return c.json({ items });
 });
 
@@ -356,35 +357,36 @@ apiRouter.get('/media/progress', (c) => {
   const status = c.req.query('status');
   const requestedLimit = c.req.query('limit');
   const limit = requestedLimit ? parseInt(requestedLimit, 10) : 200;
-  const items = MediaModel.getProgressItems({ status, limit });
+  const items = MediaModel.getProgressItems(getCurrentUserId(c), { status, limit });
   return c.json({ items });
 });
 
 apiRouter.post('/media/:id/progress/watched', (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id);
+  const userId = getCurrentUserId(c);
+  const item = MediaModel.getById(id, userId);
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
-  const progress = ProgressModel.markWatched(id);
+  const progress = ProgressModel.markWatched(userId, id);
   return c.json({ progress });
 });
 
 apiRouter.post('/media/:id/progress/unwatched', (c) => {
   const id = c.req.param('id');
-  ProgressModel.remove(id);
+  ProgressModel.remove(getCurrentUserId(c), id);
   return c.json({ success: true });
 });
 
 apiRouter.delete('/media/:id/progress', (c) => {
   const id = c.req.param('id');
-  ProgressModel.remove(id);
+  ProgressModel.remove(getCurrentUserId(c), id);
   return c.json({ success: true });
 });
 
 apiRouter.get('/media/:id', (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
@@ -396,27 +398,29 @@ apiRouter.get('/media/:id', (c) => {
 apiRouter.get('/series', (c) => {
   const libraryId = c.req.query('libraryId');
   const search = c.req.query('search');
-  const items = SeriesModel.getAll({ libraryId, search });
+  const items = SeriesModel.getAll(getCurrentUserId(c), { libraryId, search });
   return c.json({ items });
 });
 
 apiRouter.get('/series/:id', (c) => {
   const id = c.req.param('id');
-  const series = SeriesModel.getById(id);
+  const userId = getCurrentUserId(c);
+  const series = SeriesModel.getById(id, userId);
   if (!series) {
     return c.json({ error: 'Series not found' }, 404);
   }
-  const seasons = SeriesModel.getSeasons(series.library_id, series.title);
+  const seasons = SeriesModel.getSeasons(series.library_id, series.title, userId);
   return c.json({ series, seasons });
 });
 
 apiRouter.get('/series/:id/episodes', (c) => {
   const id = c.req.param('id');
-  const series = SeriesModel.getById(id);
+  const userId = getCurrentUserId(c);
+  const series = SeriesModel.getById(id, userId);
   if (!series) {
     return c.json({ error: 'Series not found' }, 404);
   }
-  const items = MediaModel.getBySeries(series.library_id, series.title);
+  const items = MediaModel.getBySeries(series.library_id, series.title, userId);
   return c.json({ series, items });
 });
 
@@ -424,7 +428,7 @@ apiRouter.get('/series/:id/episodes', (c) => {
 
 apiRouter.get('/media/:id/stream', async (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media file not found', 404);
   }
@@ -492,7 +496,7 @@ apiRouter.get('/media/:id/stream', async (c) => {
 
 apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item) return c.text('Not found', 404);
 
   const playlist = transcoder.generateMasterPlaylist(id, item.width || 1920, item.height || 1080);
@@ -507,7 +511,7 @@ apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
 apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
   const id = c.req.param('id');
   const quality = c.req.param('quality') as TranscodeQuality;
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item) return c.text('Not found', 404);
 
   const playlist = transcoder.generateVariantPlaylist(id, item.duration || 3600, quality);
@@ -530,7 +534,7 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
   }
 
   const seq = parseInt(seqMatch[1], 10);
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
   }
@@ -545,6 +549,13 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
     });
   } catch (err: any) {
     console.error('Error generating HLS segment:', err);
+    if (err instanceof TranscodeCapacityError) {
+      c.header('Retry-After', '2');
+      return c.json({ error: err.message, maxConcurrentTranscodes: err.limit }, 429);
+    }
+    if (err instanceof TranscodeKilledError) {
+      return c.json({ error: err.message }, 503);
+    }
     return c.text('Segment transcode failed', 500);
   }
 });
@@ -570,7 +581,7 @@ apiRouter.get('/media/:id/thumbnail', (c) => {
 
 apiRouter.post('/media/:id/thumbnail', async (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
@@ -593,7 +604,7 @@ apiRouter.post('/media/:id/thumbnail', async (c) => {
 apiRouter.get('/media/:id/subtitles/:index', async (c) => {
   const id = c.req.param('id');
   const trackIndex = parseInt(c.req.param('index'), 10);
-  const item = MediaModel.getById(id);
+  const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
   }
@@ -638,7 +649,7 @@ apiRouter.post('/media/:id/progress', async (c) => {
   const position = parseFloat(body.position || '0');
   const duration = parseFloat(body.duration || '0');
 
-  const progress = ProgressModel.upsert(id, position, duration);
+  const progress = ProgressModel.upsert(getCurrentUserId(c), id, position, duration);
   return c.json({ progress });
 });
 
@@ -664,6 +675,16 @@ apiRouter.post('/system/hardware/accel', async (c) => {
   }
   transcoder.setPreferredAccel(accel);
   return c.json({ success: true, hardware: transcoder.getHardwareStatus() });
+});
+
+// Mutating API routes are admin-authenticated by the server middleware.
+apiRouter.post('/system/transcodes/kill', (c) => {
+  const killed = transcoder.killAllTranscodes();
+  return c.json({
+    success: true,
+    killed,
+    transcodes: transcoder.getTranscodeStatus()
+  });
 });
 
 // ---------------- Transcode Cache Management API ---------------- //
