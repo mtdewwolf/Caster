@@ -10,6 +10,9 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+export const ADMIN_USER_ID = 'admin';
+export const PUBLIC_USER_ID = 'public';
+
 interface LoginAttempt {
   failures: number;
   resetAt: number;
@@ -77,6 +80,16 @@ function hasAdminAccess(c: Context): boolean {
   const bearer = bearerToken(c);
   if (bearer && credentialMatches(bearer)) return true;
   return isValidSession(getCookie(c, SESSION_COOKIE));
+}
+
+/**
+ * Resolve the progress owner for this request. The current authentication
+ * implementation has one authenticated principal; keeping this mapping here
+ * lets a future multi-user auth layer replace it without changing media and
+ * progress routes again.
+ */
+export function getCurrentUserId(c: Context): string {
+  return hasAdminAccess(c) ? ADMIN_USER_ID : PUBLIC_USER_ID;
 }
 
 function requestIsSecure(c: Context): boolean {
