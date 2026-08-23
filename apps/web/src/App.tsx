@@ -88,6 +88,20 @@ export const App: React.FC = () => {
     loadMedia();
   }, [activeType, searchQuery, selectedResolution]);
 
+  useEffect(() => {
+    if (!scanStatus?.isScanning) return;
+
+    const interval = setInterval(async () => {
+      try {
+        setScanStatus(await api.getScanStatus());
+      } catch (err) {
+        console.error('Error fetching scan status:', err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [scanStatus?.isScanning]);
+
   // Featured hero item (either the first continue watching or first media item)
   const heroItem = continueWatching[0] || mediaItems[0];
 
