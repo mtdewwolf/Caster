@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
-import { transcoder } from '../transcoder/engine';
+import { TranscodeCapacityError, TranscodeKilledError, transcoder } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 
 export const apiRouter = new Hono();
@@ -544,6 +544,13 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
     });
   } catch (err: any) {
     console.error('Error generating HLS segment:', err);
+    if (err instanceof TranscodeCapacityError) {
+      c.header('Retry-After', '2');
+      return c.json({ error: err.message, maxConcurrentTranscodes: err.limit }, 429);
+    }
+    if (err instanceof TranscodeKilledError) {
+      return c.json({ error: err.message }, 503);
+    }
     return c.text('Segment transcode failed', 500);
   }
 });
@@ -641,6 +648,16 @@ apiRouter.post('/system/hardware/accel', async (c) => {
   }
   transcoder.setPreferredAccel(accel);
   return c.json({ success: true, hardware: transcoder.getHardwareStatus() });
+});
+
+// Mutating API routes are admin-authenticated by the server middleware.
+apiRouter.post('/system/transcodes/kill', (c) => {
+  const killed = transcoder.killAllTranscodes();
+  return c.json({
+    success: true,
+    killed,
+    transcodes: transcoder.getTranscodeStatus()
+  });
 });
 
 // ---------------- Transcode Cache Management API ---------------- //
