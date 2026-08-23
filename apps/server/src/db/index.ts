@@ -11,6 +11,7 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const DB_PATH = path.join(DATA_DIR, 'media.db');
 export const db = new Database(DB_PATH);
+let mediaFtsEnabled = false;
 
 // Enable WAL mode for high concurrency
 db.run('PRAGMA journal_mode = WAL;');
@@ -70,6 +71,50 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_media_title ON media_items(title);
     CREATE INDEX IF NOT EXISTS idx_media_series ON media_items(series_title, season_number, episode_number);
   `);
+
+  // FTS5 is bundled with Bun's SQLite build, but keep LIKE search as a fallback
+  // for environments that provide SQLite without the extension.
+  try {
+    const ftsAlreadyExists = !!db.query(`
+      SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'media_items_fts'
+    `).get();
+
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS media_items_fts USING fts5(
+        title,
+        series_title,
+        content = 'media_items',
+        content_rowid = 'rowid',
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS media_items_fts_insert AFTER INSERT ON media_items BEGIN
+        INSERT INTO media_items_fts(rowid, title, series_title)
+        VALUES (new.rowid, new.title, new.series_title);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS media_items_fts_delete AFTER DELETE ON media_items BEGIN
+        INSERT INTO media_items_fts(media_items_fts, rowid, title, series_title)
+        VALUES ('delete', old.rowid, old.title, old.series_title);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS media_items_fts_update AFTER UPDATE ON media_items BEGIN
+        INSERT INTO media_items_fts(media_items_fts, rowid, title, series_title)
+        VALUES ('delete', old.rowid, old.title, old.series_title);
+        INSERT INTO media_items_fts(rowid, title, series_title)
+        VALUES (new.rowid, new.title, new.series_title);
+      END;
+    `);
+
+    if (!ftsAlreadyExists) {
+      db.run(`INSERT INTO media_items_fts(media_items_fts) VALUES ('rebuild')`);
+    }
+    mediaFtsEnabled = true;
+  } catch (error) {
+    mediaFtsEnabled = false;
+    console.warn('SQLite FTS5 unavailable; falling back to LIKE search.', error);
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS watch_progress (
@@ -185,9 +230,18 @@ export const MediaModel = {
       whereClauses.push('m.resolution_label LIKE ?');
       params.push(`%${options.resolution}%`);
     }
-    if (options.search) {
-      whereClauses.push('(m.title LIKE ? OR m.series_title LIKE ?)');
-      params.push(`%${options.search}%`, `%${options.search}%`);
+    const search = options.search?.trim();
+    if (search) {
+      const ftsQuery = buildFtsQuery(search);
+      if (mediaFtsEnabled && ftsQuery) {
+        whereClauses.push(`m.rowid IN (
+          SELECT rowid FROM media_items_fts WHERE media_items_fts MATCH ?
+        )`);
+        params.push(ftsQuery);
+      } else {
+        whereClauses.push('(m.title LIKE ? OR m.series_title LIKE ?)');
+        params.push(`%${search}%`, `%${search}%`);
+      }
     }
 
     const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
@@ -316,6 +370,11 @@ export const MediaModel = {
     db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
   }
 };
+
+function buildFtsQuery(search: string): string {
+  const tokens = search.match(/[\p{L}\p{N}_]+/gu) || [];
+  return tokens.map((token) => `"${token.replaceAll('"', '""')}"*`).join(' AND ');
+}
 
 export const ProgressModel = {
   upsert: (mediaId: string, position: number, duration: number) => {
