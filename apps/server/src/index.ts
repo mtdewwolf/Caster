@@ -7,6 +7,7 @@ import { initDatabase } from './db';
 import { apiRouter } from './routes/api';
 import { fsRouter } from './routes/fs';
 import { transcoder } from './transcoder/engine';
+import { authRouter, isAuthConfigured, requireAdminForMutations } from './auth';
 
 // Initialize SQLite database
 initDatabase();
@@ -20,6 +21,11 @@ app.use('*', cors({
   allowHeaders: ['Content-Type', 'Authorization', 'Range'],
   exposeHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
 }));
+
+// All API writes require an authenticated admin session. Reads stay public so
+// anyone on the LAN can browse and stream without an account.
+app.use('/api/*', requireAdminForMutations);
+app.route('/api/auth', authRouter);
 
 // Mount API router
 app.route('/api', apiRouter);
@@ -65,6 +71,10 @@ console.log(`   - Intel QSV: ${hw.qsvSupported ? '✓ Available' : '✗'}`);
 console.log(`   - NVIDIA NVENC: ${hw.nvencSupported ? '✓ Available' : '✗'}`);
 console.log(`   - VAAPI: ${hw.vaapiSupported ? '✓ Available' : '✗'}`);
 console.log(`======================================================\n`);
+
+if (!isAuthConfigured()) {
+  console.warn('WARNING: Admin mutations are locked until ADMIN_PASSWORD or ADMIN_TOKEN is configured.');
+}
 
 export default {
   port: PORT,

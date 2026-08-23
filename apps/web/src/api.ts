@@ -1,43 +1,85 @@
 import type { Library, MediaItem, Series, SeriesSeason, SystemHardwareStatus, ScanStatus, BrowseResult } from './types';
 
-
 const API_BASE = '/api';
 
+export interface AuthSession {
+  authenticated: boolean;
+  configured: boolean;
+}
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    credentials: 'same-origin',
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init?.headers
+    }
+  });
+
+  const isJson = response.headers.get('content-type')?.includes('application/json');
+  const data = isJson ? await response.json() : null;
+  if (!response.ok) {
+    const message = data && typeof data.error === 'string' ? data.error : `Request failed (${response.status})`;
+    throw new ApiError(message, response.status);
+  }
+
+  return data as T;
+}
+
 export const api = {
+  getAuthSession(): Promise<AuthSession> {
+    return request<AuthSession>('/auth/session');
+  },
+
+  login(password: string): Promise<{ authenticated: true }> {
+    return request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password })
+    });
+  },
+
+  logout(): Promise<{ authenticated: false }> {
+    return request('/auth/logout', { method: 'POST' });
+  },
+
   async getLibraries(): Promise<Library[]> {
-    const res = await fetch(`${API_BASE}/libraries`);
-    const data = await res.json();
+    const data = await request<{ libraries: Library[] }>('/libraries');
     return data.libraries || [];
   },
 
   async createLibrary(payload: { name: string; path: string; type: string }): Promise<Library> {
-    const res = await fetch(`${API_BASE}/libraries`, {
+    const data = await request<{ library: Library }>('/libraries', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
     return data.library;
   },
 
   async deleteLibrary(id: string): Promise<void> {
-    await fetch(`${API_BASE}/libraries/${id}`, { method: 'DELETE' });
+    await request(`/libraries/${id}`, { method: 'DELETE' });
   },
 
   async scanLibrary(id: string): Promise<void> {
-    await fetch(`${API_BASE}/libraries/${id}/scan`, { method: 'POST' });
+    await request(`/libraries/${id}/scan`, { method: 'POST' });
   },
 
   async scanAllLibraries(): Promise<void> {
-    await fetch(`${API_BASE}/libraries/scan-all`, { method: 'POST' });
+    await request('/libraries/scan-all', { method: 'POST' });
   },
 
-  async getScanStatus(): Promise<ScanStatus> {
-    const res = await fetch(`${API_BASE}/libraries/scan/status`);
-    return await res.json();
+  getScanStatus(): Promise<ScanStatus> {
+    return request('/libraries/scan/status');
   },
 
-  async getMedia(params: {
+  getMedia(params: {
     libraryId?: string;
     type?: string;
     search?: string;
@@ -55,21 +97,18 @@ export const api = {
     if (params.limit) query.set('limit', params.limit.toString());
     if (params.offset) query.set('offset', params.offset.toString());
 
-    const res = await fetch(`${API_BASE}/media?${query.toString()}`);
-    return await res.json();
+    return request(`/media?${query.toString()}`);
   },
 
   async getContinueWatching(): Promise<MediaItem[]> {
-    const res = await fetch(`${API_BASE}/media/continue-watching`);
-    const data = await res.json();
+    const data = await request<{ items: MediaItem[] }>('/media/continue-watching');
     return data.items || [];
   },
 
   async getProgress(status?: 'in_progress' | 'completed'): Promise<MediaItem[]> {
     const query = new URLSearchParams();
     if (status) query.set('status', status);
-    const res = await fetch(`${API_BASE}/media/progress?${query.toString()}`);
-    const data = await res.json();
+    const data = await request<{ items: MediaItem[] }>(`/media/progress?${query.toString()}`);
     return data.items || [];
   },
 
@@ -78,70 +117,55 @@ export const api = {
     if (params.libraryId) query.set('libraryId', params.libraryId);
     if (params.search) query.set('search', params.search);
 
-    const res = await fetch(`${API_BASE}/series?${query.toString()}`);
-    const data = await res.json();
+    const data = await request<{ items: Series[] }>(`/series?${query.toString()}`);
     return data.items || [];
   },
 
-  async getSeriesDetail(id: string): Promise<{ series: Series; seasons: SeriesSeason[] }> {
-    const res = await fetch(`${API_BASE}/series/${id}`);
-    return await res.json();
+  getSeriesDetail(id: string): Promise<{ series: Series; seasons: SeriesSeason[] }> {
+    return request(`/series/${id}`);
   },
 
-  async getSeriesEpisodes(id: string): Promise<{ series: Series; items: MediaItem[] }> {
-    const res = await fetch(`${API_BASE}/series/${id}/episodes`);
-    return await res.json();
+  getSeriesEpisodes(id: string): Promise<{ series: Series; items: MediaItem[] }> {
+    return request(`/series/${id}/episodes`);
   },
 
   async markWatched(id: string): Promise<void> {
-    await fetch(`${API_BASE}/media/${id}/progress/watched`, { method: 'POST' });
+    await request(`/media/${id}/progress/watched`, { method: 'POST' });
   },
 
   async markUnwatched(id: string): Promise<void> {
-    await fetch(`${API_BASE}/media/${id}/progress/unwatched`, { method: 'POST' });
+    await request(`/media/${id}/progress/unwatched`, { method: 'POST' });
   },
 
   async removeProgress(id: string): Promise<void> {
-    await fetch(`${API_BASE}/media/${id}/progress`, { method: 'DELETE' });
+    await request(`/media/${id}/progress`, { method: 'DELETE' });
   },
 
   async getMediaItem(id: string): Promise<MediaItem> {
-    const res = await fetch(`${API_BASE}/media/${id}`);
-    const data = await res.json();
+    const data = await request<{ item: MediaItem }>(`/media/${id}`);
     return data.item;
   },
 
   async updateProgress(id: string, position: number, duration: number): Promise<void> {
-    try {
-      await fetch(`${API_BASE}/media/${id}/progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position, duration })
-      });
-    } catch (e) {
-      console.warn('Failed to update progress', e);
-    }
+    await request(`/media/${id}/progress`, {
+      method: 'POST',
+      body: JSON.stringify({ position, duration })
+    });
   },
 
-  async getSystemStatus(): Promise<{ hardware: SystemHardwareStatus; server: string; uptime: number }> {
-    const res = await fetch(`${API_BASE}/system/status`);
-    return await res.json();
+  getSystemStatus(): Promise<{ hardware: SystemHardwareStatus; server: string; uptime: number }> {
+    return request('/system/status');
   },
 
   async setHardwareAccel(accel: 'qsv' | 'nvenc' | 'vaapi' | 'none'): Promise<void> {
-    await fetch(`${API_BASE}/system/hardware/accel`, {
+    await request('/system/hardware/accel', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accel })
     });
   },
 
-  async browseFilesystem(dirPath?: string): Promise<BrowseResult> {
+  browseFilesystem(dirPath?: string): Promise<BrowseResult> {
     const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
-    const res = await fetch(`${API_BASE}/fs/browse${query}`);
-    if (!res.ok) {
-      throw new Error('Folder not found or not accessible');
-    }
-    return await res.json();
+    return request(`/fs/browse${query}`);
   }
 };

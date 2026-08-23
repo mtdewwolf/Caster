@@ -353,7 +353,8 @@ apiRouter.get('/media/continue-watching', (c) => {
 
 apiRouter.get('/media/progress', (c) => {
   const status = c.req.query('status');
-  const limit = c.req.query('limit') ? parseInt(c.req.query('limit'), 10) : 200;
+  const requestedLimit = c.req.query('limit');
+  const limit = requestedLimit ? parseInt(requestedLimit, 10) : 200;
   const items = MediaModel.getProgressItems({ status, limit });
   return c.json({ items });
 });
