@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2 } from 'lucide-react';
 import type { MediaItem, Series, SystemHardwareStatus, ScanStatus } from './types';
 import { api } from './api';
+import type { AuthSession } from './api';
 import { Navbar, AppView } from './components/Navbar';
 import { MediaCard } from './components/MediaCard';
 import { SeriesCard } from './components/SeriesCard';
@@ -11,6 +12,7 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { AudioPlayer } from './components/AudioPlayer';
 import { SettingsModal } from './components/SettingsModal';
 import { ProgressPage } from './components/ProgressPage';
+import { LoginModal } from './components/LoginModal';
 
 const MEDIA_PAGE_SIZE = 50;
 
@@ -29,10 +31,14 @@ export const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const mediaRequestId = useRef(0);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeriesId, setSelectedSeriesId] = useState<string | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [showLogin, setShowLogin] = useState(false);
+  const [openSettingsAfterLogin, setOpenSettingsAfterLogin] = useState(false);
 
 
   const loadMedia = async () => {
@@ -94,6 +100,13 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
+    api
+      .getAuthSession()
+      .then(setAuthSession)
+      .catch((err) => console.error('Error checking admin session:', err));
+  }, []);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setDebouncedSearchQuery(searchQuery.trim());
     }, 300);
@@ -142,6 +155,39 @@ export const App: React.FC = () => {
     }
   };
 
+  const openAdminLogin = (continueToSettings = false) => {
+    setOpenSettingsAfterLogin(continueToSettings);
+    setShowLogin(true);
+  };
+
+  const handleOpenSettings = () => {
+    if (authSession?.authenticated) {
+      setShowSettings(true);
+      return;
+    }
+    openAdminLogin(true);
+  };
+
+  const handleLogin = async (credential: string) => {
+    await api.login(credential);
+    setAuthSession({ authenticated: true, configured: true });
+    setShowLogin(false);
+    if (openSettingsAfterLogin) setShowSettings(true);
+    setOpenSettingsAfterLogin(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } finally {
+      setAuthSession((current) => ({
+        authenticated: false,
+        configured: current?.configured ?? true
+      }));
+      setShowSettings(false);
+    }
+  };
+
   // Featured hero item (either the first continue watching or first media item)
   const heroItem = continueWatching[0] || mediaItems[0];
 
@@ -155,9 +201,12 @@ export const App: React.FC = () => {
         onTypeChange={setActiveType}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenSettings={handleOpenSettings}
         hardware={hardware}
         isScanning={!!scanStatus?.isScanning}
+        isAdmin={!!authSession?.authenticated}
+        onLogin={() => openAdminLogin(false)}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
@@ -168,6 +217,8 @@ export const App: React.FC = () => {
               refreshToken={refreshToken}
               onPlay={(i) => setPlayingItem(i)}
               onSelect={(i) => setSelectedItem(i)}
+              isAdmin={!!authSession?.authenticated}
+              onRequireAdmin={() => openAdminLogin(false)}
             />
           </div>
         ) : (
@@ -344,7 +395,7 @@ export const App: React.FC = () => {
                 Add your TrueNAS media folder (e.g. <code>/media/movies</code>) in Server Settings to index your collection.
               </p>
               <button
-                onClick={() => setShowSettings(true)}
+                onClick={handleOpenSettings}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl shadow-lg transition-all"
               >
                 Open Server Settings
@@ -395,6 +446,7 @@ export const App: React.FC = () => {
         <VideoPlayer
           item={playingItem}
           onClose={closePlayer}
+          trackProgress={!!authSession?.authenticated}
         />
       ) : null}
 
@@ -415,6 +467,17 @@ export const App: React.FC = () => {
         <SettingsModal
           onClose={() => setShowSettings(false)}
           onLibrariesChanged={loadMedia}
+        />
+      )}
+
+      {showLogin && (
+        <LoginModal
+          configured={authSession?.configured ?? true}
+          onClose={() => {
+            setShowLogin(false);
+            setOpenSettingsAfterLogin(false);
+          }}
+          onLogin={handleLogin}
         />
       )}
     </div>

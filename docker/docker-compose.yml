@@ -14,6 +14,10 @@ services:
       - MEDIA_DATA_DIR=/app/data
       - THUMBNAILS_DIR=/app/data/thumbnails
       - TRANSCODE_CACHE_DIR=/app/data/transcode_cache
+      # Required: protects every POST/PUT/PATCH/DELETE API operation.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting NovaStream}
+      # Optional for API clients: send this value as Authorization: Bearer <token>.
+      # - ADMIN_TOKEN=${ADMIN_TOKEN}
       # Set timezone matching your TrueNAS SCALE host
       - TZ=America/New_York
     volumes:
