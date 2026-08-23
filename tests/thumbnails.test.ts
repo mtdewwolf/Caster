@@ -45,7 +45,7 @@ describe('Thumbnail generation and backfill', () => {
     });
     await scanLibrary(libraryId);
 
-    const { items } = MediaModel.getAll({ libraryId });
+    const { items } = MediaModel.getAll('test-user', { libraryId });
     expect(items).toHaveLength(1);
     mediaId = items[0].id;
   });
@@ -63,7 +63,7 @@ describe('Thumbnail generation and backfill', () => {
 
   it('generates a thumbnail during the initial scan', () => {
     expect(fs.existsSync(getThumbnailPath(mediaId))).toBe(true);
-    expect(MediaModel.getById(mediaId)?.poster_path).toBe(`/api/media/${mediaId}/thumbnail`);
+    expect(MediaModel.getById(mediaId, 'test-user')?.poster_path).toBe(`/api/media/${mediaId}/thumbnail`);
   });
 
   it('backfills a missing thumbnail on a later scan', async () => {
@@ -72,7 +72,7 @@ describe('Thumbnail generation and backfill', () => {
     await scanLibrary(libraryId);
 
     expect(fs.existsSync(getThumbnailPath(mediaId))).toBe(true);
-    expect(MediaModel.getById(mediaId)?.poster_path).toBe(`/api/media/${mediaId}/thumbnail`);
+    expect(MediaModel.getById(mediaId, 'test-user')?.poster_path).toBe(`/api/media/${mediaId}/thumbnail`);
   });
 
   it('force-regenerates a thumbnail through POST and serves it from the configured directory', async () => {

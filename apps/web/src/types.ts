@@ -25,6 +25,7 @@ export interface MediaStreamTrack {
 
 export interface WatchProgress {
   id: string;
+  user_id: string;
   media_id: string;
   position_seconds: number;
   duration_seconds: number;
