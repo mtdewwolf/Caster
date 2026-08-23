@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" fill="none">
+  <defs>
+    <linearGradient id="monoBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1B4B" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047" />
+      <stop offset="50%" stop-color="#EAB308" />
+      <stop offset="100%" stop-color="#CA8A04" />
+    </linearGradient>
+  </defs>
+
+  <!-- Circular Outer Badge -->
+  <circle cx="200" cy="200" r="185" fill="url(#monoBg)" stroke="url(#goldGrad)" stroke-width="8" />
+  <circle cx="200" cy="200" r="165" fill="none" stroke="url(#goldGrad)" stroke-width="2" stroke-dasharray="8 6" />
+
+  <!-- Monogram C with integrated media play glyph -->
+  <path d="M 260 130 A 90 90 0 1 0 260 270" fill="none" stroke="url(#goldGrad)" stroke-width="22" stroke-linecap="round" />
+  <path d="M 185 165 L 245 200 L 185 235 Z" fill="url(#goldGrad)" />
+</svg>

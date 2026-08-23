@@ -2,7 +2,7 @@ services:
   tailscale:
     image: tailscale/tailscale:latest
     container_name: tailscale-media
-    hostname: novastream-nas
+    hostname: caster-nas
     restart: unless-stopped
     environment:
       # Obtain an auth key from https://login.tailscale.com/admin/settings/keys
@@ -17,14 +17,14 @@ services:
       - NET_ADMIN
       - SYS_MODULE
 
-  novastream:
-    container_name: novastream
+  caster:
+    container_name: caster
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: novastream:latest
+    image: caster:latest
     restart: unless-stopped
-    # Attach NovaStream directly into the Tailscale network namespace
+    # Attach Caster directly into the Tailscale network namespace
     network_mode: "service:tailscale"
     depends_on:
       - tailscale
@@ -39,7 +39,7 @@ services:
       - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
       - TZ=America/New_York
     volumes:
-      - /mnt/tank/appdata/novastream/data:/app/data
+      - /mnt/tank/appdata/caster/data:/app/data
       - /mnt/tank/media:/media:ro
     devices:
       - /dev/dri:/dev/dri

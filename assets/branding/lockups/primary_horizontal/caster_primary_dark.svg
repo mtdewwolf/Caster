@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" fill="none">
+  <rect width="600" height="160" rx="16" fill="#0B0F19" />
+  <defs>
+    <linearGradient id="primGradDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#6366F1" />
+      <stop offset="100%" stop-color="#A855F7" />
+    </linearGradient>
+    <filter id="pGlowDark" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Logomark -->
+  <g transform="translate(30, 20)">
+    <rect width="120" height="120" rx="30" fill="#111827" stroke="#1F2937" stroke-width="2" />
+    <g filter="url(#pGlowDark)">
+      <path d="M 38 90 A 52 52 0 0 1 90 38" fill="none" stroke="url(#primGradDark)" stroke-width="10" stroke-linecap="round" />
+      <path d="M 52 50 L 86 69 L 52 88 Z" fill="url(#primGradDark)" />
+      <circle cx="38" cy="90" r="7" fill="#38BDF8" />
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(175, 42)">
+    <text x="0" y="52" fill="#F9FAFB" font-family="'Inter', -apple-system, system-ui, sans-serif" font-weight="900" font-size="52" letter-spacing="-1.5">CASTER</text>
+    
+    <rect x="235" y="16" width="68" height="28" rx="8" fill="#1E293B" stroke="#38BDF8" stroke-width="1.5" />
+    <text x="269" y="35" fill="#38BDF8" font-family="'Inter', monospace, sans-serif" font-weight="800" font-size="13" text-anchor="middle" letter-spacing="1.5">NAS</text>
+
+    <text x="3" y="78" fill="#94A3B8" font-family="'Inter', system-ui, sans-serif" font-weight="600" font-size="14" letter-spacing="3">PERSONAL MEDIA SERVER</text>
+  </g>
+</svg>

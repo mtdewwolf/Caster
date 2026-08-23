@@ -1,6 +1,6 @@
-# Deploying NovaStream Media Server on TrueNAS SCALE
+# Deploying Caster Media Server on TrueNAS SCALE
 
-This guide walks you through deploying **NovaStream** on **TrueNAS SCALE** (supporting TrueNAS SCALE 24.10+ *Electric Eel* with native Docker Compose, and 24.04 *Dragonfish*).
+This guide walks you through deploying **Caster** on **TrueNAS SCALE** (supporting TrueNAS SCALE 24.10+ *Electric Eel* with native Docker Compose, and 24.04 *Dragonfish*).
 
 ---
 
@@ -12,7 +12,7 @@ Before launching the container, create persistent datasets for your media and se
 2. Select your pool (e.g. `tank` or `pool1`) and click **Add Dataset**:
    - **Media Dataset**: Name it `media` (e.g., `/mnt/tank/media`)
      - Subfolders: `/mnt/tank/media/movies`, `/mnt/tank/media/tv`, `/mnt/tank/media/music`
-   - **AppData Dataset**: Name it `appdata/novastream` (e.g., `/mnt/tank/appdata/novastream/data`)
+   - **AppData Dataset**: Name it `appdata/caster` (e.g., `/mnt/tank/appdata/caster/data`)
 3. Set appropriate permissions on the dataset (Read/Write for AppData, Read for Media).
 
 ---
@@ -46,10 +46,10 @@ TrueNAS SCALE 24.10 (*Electric Eel*) supports native Docker Compose:
 1. SSH into your TrueNAS SCALE server or open the Web Shell.
 2. Create a project directory:
    ```bash
-   mkdir -p /mnt/tank/appdata/novastream
-   cd /mnt/tank/appdata/novastream
+   mkdir -p /mnt/tank/appdata/caster
+   cd /mnt/tank/appdata/caster
    ```
-3. Copy the `docker-compose.yml` file to `/mnt/tank/appdata/novastream/docker-compose.yml`.
+3. Copy the `docker-compose.yml` file to `/mnt/tank/appdata/caster/docker-compose.yml`.
 4. Adjust volume mount paths to match your ZFS pool name (e.g., replace `/mnt/tank/` with your pool path).
 5. Set a strong admin password. This protects library changes, scans, watch-progress writes, and server settings while leaving browsing and streaming public:
    ```bash
@@ -71,13 +71,13 @@ TrueNAS SCALE 24.10 (*Electric Eel*) supports native Docker Compose:
 If you are using TrueNAS SCALE 24.04 (*Dragonfish*):
 
 1. Open **Apps** > **Discover Apps** > **Custom App** (or use **Dockge** / **Portainer**).
-2. Set **Application Name**: `novastream`
-3. Set **Image repository**: `novastream` or your custom registry image.
+2. Set **Application Name**: `caster`
+3. Set **Image repository**: `caster` or your custom registry image.
 4. **Port Forwarding**:
    - Container Port: `3001`
    - Node Port: `3001` (or desired host port)
 5. **Storage / Host Path Volumes**:
-   - Mount 1: Host Path `/mnt/tank/appdata/novastream/data` -> Container Path `/app/data`
+   - Mount 1: Host Path `/mnt/tank/appdata/caster/data` -> Container Path `/app/data`
    - Mount 2: Host Path `/mnt/tank/media` -> Container Path `/media` (Read-Only)
 6. **GPU Configuration**:
    - Check **GPU Resource (Intel / NVIDIA)** or pass `/dev/dri` device.
@@ -96,5 +96,5 @@ If you are using TrueNAS SCALE 24.04 (*Dragonfish*):
    - **Name**: e.g., `Movies 4K`
    - **Path**: `/media/movies`
    - **Type**: `Movies`
-5. Click **Add Library**. NovaStream will automatically scan the folder, extract metadata, generate posters, and index video streams.
+5. Click **Add Library**. Caster will automatically scan the folder, extract metadata, generate posters, and index video streams.
 6. Under **Hardware Transcoding**, verify that your hardware accelerator (Intel QSV, VAAPI, or NVENC) is active.

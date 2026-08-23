@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="32" fill="#0D071E" stroke="#4C1D95" stroke-width="3" />
+  <defs>
+    <linearGradient id="nightFavGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C084FC" />
+      <stop offset="100%" stop-color="#7C3AED" />
+    </linearGradient>
+  </defs>
+  <path d="M 40 92 A 52 52 0 0 1 92 40" fill="none" stroke="url(#nightFavGrad)" stroke-width="10" stroke-linecap="round" />
+  <path d="M 52 52 L 86 71 L 52 90 Z" fill="url(#nightFavGrad)" />
+  <circle cx="40" cy="92" r="7" fill="#C084FC" />
+  
+  <!-- Nightly Moon Indicator -->
+  <circle cx="98" cy="30" r="16" fill="#8B5CF6" />
+  <circle cx="92" cy="26" r="14" fill="#0D071E" />
+</svg>

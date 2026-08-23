@@ -320,7 +320,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                   <span>Hardware Acceleration Engine</span>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  NovaStream supports GPU-accelerated transcoding on TrueNAS SCALE via Intel QuickSync (QSV),
+                  Caster supports GPU-accelerated transcoding on TrueNAS SCALE via Intel QuickSync (QSV),
                   VAAPI, or NVIDIA NVENC.
                 </p>
 
