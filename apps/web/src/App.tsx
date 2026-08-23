@@ -8,6 +8,7 @@ import { SeriesCard } from './components/SeriesCard';
 import { SeriesDetailPage } from './components/SeriesDetailPage';
 import { MediaDetailModal } from './components/MediaDetailModal';
 import { VideoPlayer } from './components/VideoPlayer';
+import { AudioPlayer } from './components/AudioPlayer';
 import { SettingsModal } from './components/SettingsModal';
 import { ProgressPage } from './components/ProgressPage';
 
@@ -384,13 +385,18 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* Video Player Modal */}
-      {playingItem && (
+      {/* Media Player Modal */}
+      {playingItem?.type === 'track' ? (
+        <AudioPlayer
+          item={playingItem}
+          onClose={closePlayer}
+        />
+      ) : playingItem ? (
         <VideoPlayer
           item={playingItem}
           onClose={closePlayer}
         />
-      )}
+      ) : null}
 
       {/* Media Detail Modal */}
       {selectedItem && (
