@@ -34,6 +34,9 @@ services:
       - MEDIA_DATA_DIR=/app/data
       - THUMBNAILS_DIR=/app/data/thumbnails
       - TRANSCODE_CACHE_DIR=/app/data/transcode_cache
+      - TRANSCODE_MAX_CONCURRENT=${TRANSCODE_MAX_CONCURRENT:-2}
+      - TRANSCODE_CACHE_MAX_AGE_HOURS=${TRANSCODE_CACHE_MAX_AGE_HOURS:-24}
+      - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
       - TZ=America/New_York
     volumes:
       - /mnt/tank/appdata/novastream/data:/app/data

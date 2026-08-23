@@ -147,6 +147,22 @@ export interface SystemHardwareStatus {
   nvencSupported: boolean;
   vaapiSupported: boolean;
   activeTranscodes: number;
+  maxConcurrentTranscodes: number;
+}
+
+export interface ActiveTranscodeSession {
+  id: string;
+  mediaId: string;
+  quality: TranscodeQuality;
+  sequence: number;
+  startedAt: string;
+}
+
+export interface TranscodeSessionStatus {
+  activeTranscodes: number;
+  maxConcurrentTranscodes: number;
+  acceptingTranscodes: boolean;
+  sessions: ActiveTranscodeSession[];
 }
 
 export interface TranscodeCacheStatus {
