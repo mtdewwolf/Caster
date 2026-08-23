@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { extractMediaMetadata, generateThumbnail, parseFilename } from './metadata';
-import { LibraryModel, MediaModel } from '../db';
+import { EXTERNAL_SUBTITLE_INDEX_BASE, findExternalSubtitles } from './subtitles';
+import { ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
 import type { Library, MediaItem } from '../types';
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso']);
@@ -128,6 +129,28 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
   const parsed = parseFilename(filename, library.type);
   const metadata = await extractMediaMetadata(filePath);
 
+  const streams = [...(metadata?.streams || [])];
+  const externalTracks: Array<{ streamIndex: number; filePath: string; language?: string }> = [];
+  if (parsed.type !== 'track') {
+    const sidecars = findExternalSubtitles(filePath);
+    for (let i = 0; i < sidecars.length; i++) {
+      const streamIndex = EXTERNAL_SUBTITLE_INDEX_BASE + i;
+      streams.push({
+        index: streamIndex,
+        codec_type: 'subtitle',
+        codec_name: 'srt',
+        codec_long_name: 'SubRip (external)',
+        language: sidecars[i].language,
+        is_external: true
+      });
+      externalTracks.push({
+        streamIndex,
+        filePath: sidecars[i].path,
+        language: sidecars[i].language
+      });
+    }
+  }
+
   const now = new Date().toISOString();
 
   let posterPath: string | undefined = undefined;
@@ -170,11 +193,12 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
     audio_channels: metadata?.audio?.channels,
     audio_channel_layout: metadata?.audio?.channel_layout,
     audio_language: metadata?.audio?.language,
-    streams_json: JSON.stringify(metadata?.streams || []),
+    streams_json: JSON.stringify(streams),
     poster_path: posterPath,
     created_at: now,
     updated_at: now
   };
 
   MediaModel.upsert(mediaItem);
+  ExternalSubtitleModel.replaceAllForMedia(fileId, externalTracks);
 }

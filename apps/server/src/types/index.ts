@@ -16,8 +16,9 @@ export interface MediaStreamTrack {
   sample_rate?: string;
   language?: string;
   title?: string;
-  is_default?: boolean;
-  is_forced?: boolean;
+   is_default?: boolean;
+   is_forced?: boolean;
+   is_external?: boolean;
   color_space?: string;
   color_transfer?: string;
   color_primaries?: string;

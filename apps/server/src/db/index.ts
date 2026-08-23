@@ -67,6 +67,21 @@ export function initDatabase() {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS external_subtitles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      stream_index INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      language TEXT,
+      UNIQUE(media_id, stream_index)
+    );
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_external_subtitles_media ON external_subtitles(media_id);
+  `);
+
+  db.run(`
     CREATE INDEX IF NOT EXISTS idx_media_library ON media_items(library_id);
     CREATE INDEX IF NOT EXISTS idx_media_type ON media_items(type);
     CREATE INDEX IF NOT EXISTS idx_media_title ON media_items(title);
@@ -188,6 +203,40 @@ export const LibraryModel = {
 
   delete: (id: string) => {
     db.run('DELETE FROM libraries WHERE id = ?', [id]);
+  }
+};
+
+export interface ExternalSubtitleRow {
+  id: number;
+  media_id: string;
+  stream_index: number;
+  file_path: string;
+  language?: string;
+}
+
+export const ExternalSubtitleModel = {
+  replaceAllForMedia: (mediaId: string, tracks: Array<{ streamIndex: number; filePath: string; language?: string }>) => {
+    db.run('DELETE FROM external_subtitles WHERE media_id = ?', [mediaId]);
+    if (tracks.length === 0) return;
+    const stmt = db.prepare(`
+      INSERT INTO external_subtitles (media_id, stream_index, file_path, language)
+      VALUES ($media_id, $stream_index, $file_path, $language)
+    `);
+    for (const track of tracks) {
+      stmt.run({
+        $media_id: mediaId,
+        $stream_index: track.streamIndex,
+        $file_path: track.filePath,
+        $language: track.language || null
+      });
+    }
+  },
+
+  getByMediaAndIndex: (mediaId: string, streamIndex: number): ExternalSubtitleRow | null => {
+    return db.query(`
+      SELECT * FROM external_subtitles
+      WHERE media_id = ? AND stream_index = ?
+    `).get(mediaId, streamIndex) as ExternalSubtitleRow | null;
   }
 };
 
