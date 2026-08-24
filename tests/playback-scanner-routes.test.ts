@@ -4,12 +4,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { Hono } from 'hono';
-import { requireAdminForMutations } from '../apps/server/src/auth';
+import type { AuthPrincipal } from '../apps/server/src/auth';
 import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
 import { db } from '../apps/server/src/db';
 import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
+import { createApiRequestSecurity } from '../apps/server/src/security/request-security';
 import {
   TranscodeCapacityError,
   TranscodeKilledError,
@@ -34,7 +35,20 @@ describe('scanner and playback route failures', () => {
   let mediaPath = '';
   let missingSourceMediaId = '';
 
-  app.use('/api/*', requireAdminForMutations);
+  app.use('/api/*', createApiRequestSecurity({
+    isProtectedModeEnabled: () => false,
+    isAuthConfigured: () => true,
+    anonymousOpenAccessAllowed: () => true,
+    resolvePrincipal: (context): AuthPrincipal | null => {
+      if (context.req.header('authorization') !== `Bearer ${adminToken}`) return null;
+      return {
+        id: adminId,
+        username: adminId,
+        role: 'admin',
+        credential: 'bearer'
+      };
+    }
+  }));
   app.route('/api', apiRouter);
 
   function adminRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
@@ -161,7 +175,7 @@ describe('scanner and playback route failures', () => {
       libraryId: scanLibraryId
     });
 
-    const statusResponse = await app.request('/api/libraries/scan/status');
+    const statusResponse = await adminRequest('/api/libraries/scan/status');
     expect(statusResponse.status).toBe(200);
     expect(await statusResponse.json()).toMatchObject({
       isScanning: false,
@@ -183,7 +197,7 @@ describe('scanner and playback route failures', () => {
       errors: ['fixture warning']
     });
 
-    const statusResponse = await app.request('/api/libraries/scan/status');
+    const statusResponse = await adminRequest('/api/libraries/scan/status');
     expect(statusResponse.status).toBe(200);
     expect(await statusResponse.json()).toEqual({
       isScanning: true,
