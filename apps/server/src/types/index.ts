@@ -48,7 +48,6 @@ export interface MediaMetadata {
   };
   streams: MediaStreamTrack[];
   content_rating?: string;
-  format_tags?: Record<string, string>;
 }
 
 export interface ContentRatingScope {
@@ -82,14 +81,7 @@ export interface MediaItem {
   audio_channels?: number;
   audio_channel_layout?: string;
   audio_language?: string;
-  artist?: string;
-  album_artist?: string;
-  album?: string;
-  track_number?: number;
-  disc_number?: number;
-  genre?: string;
   streams_json: string; // JSON of MediaStreamTrack[]
-  content_fingerprint?: string;
   poster_path?: string;
   content_rating?: string;
   content_rating_level?: number;

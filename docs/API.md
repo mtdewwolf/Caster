@@ -168,8 +168,7 @@ Common statuses include:
 
 | Status | Meaning in the current API |
 | --- | --- |
-| `200` | Successful read, update, delete, or control request. |
-| `201` | A playlist, playlist item, or watch room was created. |
+| `200` | Successful request; create operations also currently use 200. |
 | `206` | Valid single-range direct-stream response. |
 | `400` | Malformed JSON, invalid query, path parameter, or body value. |
 | `401` | Authentication required or login credential invalid. |
@@ -296,70 +295,6 @@ curl -sS --get \
   --data-urlencode 'limit=25' \
   "$CASTER_URL/api/media"
 ```
-
-## Music library and playlists
-
-Music scans import common container tags (`title`, `artist`, `album_artist`,
-`album`, track/disc number, genre, and year) with deterministic folder and
-filename fallbacks. Album tracks are ordered by disc, track, relative path,
-then stable media ID. All reads apply the current user's library and content
-rating scope before grouping or counting.
-
-| Method and path | Access | Input | Response |
-| --- | --- | --- | --- |
-| `GET /api/music/artists` | User | Optional `libraryId`, `search` | `{items}` with artist rollups. |
-| `GET /api/music/artists/:id` | User | Artist ID | `{artist,albums}` or 404. |
-| `GET /api/music/albums` | User | Optional `libraryId`, `artistId`, `search` | `{items}` with album rollups. |
-| `GET /api/music/albums/:id` | User | Album ID | `{album,tracks}` in stable playback order. |
-| `GET /api/playlists` | User | None | Current user's playlists. |
-| `POST /api/playlists` | User | `{name}` | Creates a user-owned playlist. |
-| `GET /api/playlists/:id` | User | Playlist ID | Playlist plus currently accessible entries. |
-| `PATCH /api/playlists/:id` | User | `{name,revision}` | Renames using optimistic concurrency. |
-| `DELETE /api/playlists/:id` | User | Playlist ID | Deletes the owned playlist. |
-| `POST /api/playlists/:id/items` | User | `{mediaId,position?}` | Adds an accessible track; duplicates are allowed. |
-| `PUT /api/playlists/:id/items/order` | User | `{itemIds,revision}` | Reorders every entry atomically. |
-| `DELETE /api/playlists/:id/items/:itemId` | User | IDs in path | Removes one exact playlist entry. |
-
-Playlist ownership always comes from the authenticated principal; clients
-cannot submit a user ID. Cross-user IDs return 404. A stale revision returns
-409, and inaccessible entries remain stored but are omitted until access is
-restored.
-
-## Playback markers and Watch Together
-
-| Method and path | Access | Input | Response |
-| --- | --- | --- | --- |
-| `GET /api/media/:id/playback` | User | Media ID | Active intro/credit markers and the next authorized episode. |
-| `PUT /api/media/:id/markers/:type` | Admin | `{enabled,startSeconds?,endSeconds?}` | Creates/corrects or disables `intro`/`credits`. |
-| `GET /api/media/:id/markers` | Admin | Media ID | Returns all active/disabled markers and current analysis status for the manual editor. |
-| `POST /api/media/:id/markers/analysis` | Admin | Media ID | Queues bounded local chapter analysis, or reports that the item is already queued/running. |
-| `GET /api/media/:id/markers/analysis` | Admin | Media ID | Returns queued, running, completed, failed, timed-out, cancelled, or idle status. |
-| `POST /api/watch-rooms` | User | `{mediaId,positionSeconds?}` | Creates an ephemeral room and returns its invitation secret. |
-| `POST /api/watch-rooms/:id/join` | User | `{inviteToken}` | Joins after independently authorizing the room media. |
-| `GET /api/watch-rooms/:id` | Member | None | Reconnect/status snapshot. |
-| `GET /api/watch-rooms/:id/ws` | Member | WebSocket upgrade | Streams snapshots, presence, host commands/reports, periodic timeline sync, per-user preferences, and ping/pong. |
-| `POST /api/watch-rooms/:id/commands` | Host | `{action,positionSeconds}` | Applies server-authoritative play/pause/seek state. |
-| `POST /api/watch-rooms/:id/host-report` | Host | `{revision,positionSeconds,paused}` | Reanchors the current timeline. |
-| `PATCH /api/watch-rooms/:id/preferences` | Member | Per-user audio/subtitle indexes | Updates only the caller's track preferences. |
-| `POST /api/watch-rooms/:id/leave` | Member | None | Leaves the room. |
-| `DELETE /api/watch-rooms/:id` | Host | None | Closes the room. |
-
-Markers are stored against the media ID. Scans compute a bounded,
-path-independent content fingerprint and retain that ID across a rename or move
-when exactly one missing catalog row matches. Ambiguous duplicate matches are
-never guessed. This preserves dependent progress, markers, playlist entries,
-and subtitles across unambiguous path changes. Disabled markers are tombstones,
-so future detector passes cannot silently recreate an administrator-disabled
-range. Watch rooms are intentionally process-local and expire; watch progress
-continues to be written separately by each authenticated client.
-
-The default detector reads embedded chapter titles with local `ffprobe`. Scanner
-analysis is best-effort and runs through a bounded background queue, so it does
-not block or fail a library scan. Configure it with
-`CASTER_MARKER_ANALYSIS_CONCURRENCY` (default `1`, maximum `4`),
-`CASTER_MARKER_ANALYSIS_QUEUE_CAPACITY` (default `2048`), and
-`CASTER_MARKER_ANALYSIS_TIMEOUT_MS` (default `120000`). Manual and disabled
-markers take precedence over detector output.
 
 ## Direct streaming, HLS, thumbnails, and subtitles
 
