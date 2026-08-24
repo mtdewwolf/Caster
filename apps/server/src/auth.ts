@@ -5,9 +5,15 @@ import { Hono } from 'hono';
 import { getConnInfo } from 'hono/bun';
 import { db } from './db';
 import { AccessControlStore } from './db/access-control';
+import { AccountProvisioningStore } from './db/account-provisioning';
 import { SqliteSessionStore, type SessionStore } from './db/session-store';
 import { SqliteUserStore, type UserRecord, type UserRole } from './db/user-store';
 import { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
+import {
+  addressIsLocal,
+  addressMatchesNetworks,
+  effectiveClientAddress
+} from './security/client-network';
 import { verifyCastAccessToken } from './security/cast-access';
 
 const SESSION_COOKIE = 'caster_admin_session';
@@ -23,7 +29,10 @@ const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const PUBLIC_AUTH_MUTATIONS = new Set([
   '/api/auth/login',
   '/api/auth/logout',
-  '/api/auth/profile/switch'
+  '/api/auth/profile/switch',
+  '/api/auth/setup',
+  '/api/auth/invites/inspect',
+  '/api/auth/signup'
 ]);
 
 export { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
@@ -52,6 +61,7 @@ const profileSwitchAttempts = new Map<string, LoginAttempt>();
 const defaultSessionStore = new SqliteSessionStore(db);
 const defaultUserStore = new SqliteUserStore(db);
 const defaultAccessControlStore = new AccessControlStore(db);
+const defaultProvisioningStore = new AccountProvisioningStore(db);
 const lastSessionPruneAt = new WeakMap<SessionStore, number>();
 const bootstrappedEnvironment = new WeakMap<SqliteUserStore, string>();
 
@@ -77,13 +87,15 @@ export function bootstrapLegacyAdmin(userStore: SqliteUserStore = defaultUserSto
   if (process.env.ADMIN_TOKEN && !userStore.getCredentialHash(admin.id, 'api_token')) {
     userStore.setCredential(admin.id, 'api_token', process.env.ADMIN_TOKEN);
   }
+  new AccountProvisioningStore(userStore.database).claimLegacyOwnerIfConfigured();
   bootstrappedEnvironment.set(userStore, fingerprint);
 }
 
 export function isAuthConfigured(userStore: SqliteUserStore = defaultUserStore): boolean {
   try {
     bootstrapLegacyAdmin(userStore);
-    return userStore.hasAnyCredential();
+    const provisioningStore = new AccountProvisioningStore(userStore.database);
+    return !provisioningStore.isSetupRequired() && userStore.hasAnyCredential();
   } catch {
     // This is queried during startup before migrations in some consumers.
     return Boolean(process.env.ADMIN_PASSWORD || process.env.ADMIN_TOKEN);
@@ -126,6 +138,16 @@ function createSession(sessionStore: SessionStore, userId: string): string {
   const token = crypto.randomBytes(32).toString('base64url');
   sessionStore.create(hashSessionToken(token), userId, now, now + SESSION_TTL_SECONDS * 1000);
   return token;
+}
+
+function setSessionCookie(c: Context, token: string): void {
+  setCookie(c, SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'Strict',
+    secure: requestIsSecure(c),
+    path: '/',
+    maxAge: SESSION_TTL_SECONDS
+  });
 }
 
 function bearerToken(c: Context): string | undefined {
@@ -310,13 +332,41 @@ function accountError(error: unknown): { message: string; status: 400 | 409 } {
   return { message: 'The account could not be updated', status: 400 };
 }
 
+function defaultOwnerSetupAllowed(c: Context): boolean {
+  let peerAddress: string | undefined;
+  try {
+    peerAddress = getConnInfo(c).remote.address;
+  } catch {
+    return false;
+  }
+  const address = effectiveClientAddress({
+    peerAddress,
+    forwardedFor: c.req.header('x-forwarded-for'),
+    realIp: c.req.header('x-real-ip'),
+    forwarded: c.req.header('forwarded'),
+    trustedProxies: process.env.CASTER_TRUSTED_PROXIES
+  });
+  if (!address) return false;
+  return addressIsLocal(address) || addressMatchesNetworks(
+    address,
+    process.env.CASTER_SETUP_NETWORKS ?? ''
+  );
+}
+
+export interface AuthRouterOptions {
+  ownerSetupAllowed?: (context: Context) => boolean;
+}
+
 export function createAuthRouter(
   sessionStore: SessionStore = defaultSessionStore,
   userStore: SqliteUserStore = defaultUserStore,
   accessControlStore: Pick<AccessControlStore, 'verifyProfilePin' | 'canUseCapability'> =
-    defaultAccessControlStore
+    defaultAccessControlStore,
+  provisioningStore: AccountProvisioningStore = defaultProvisioningStore,
+  options: AuthRouterOptions = {}
 ): Hono {
   const router = new Hono();
+  const ownerSetupAllowed = options.ownerSetupAllowed ?? defaultOwnerSetupAllowed;
 
   function adminForRequest(c: Context): AuthPrincipal | Response {
     const principal = resolvePrincipal(c, sessionStore, userStore);
@@ -333,14 +383,52 @@ export function createAuthRouter(
       authenticated: principal !== null,
       configured,
       protectedMode: configured,
+      setupRequired: provisioningStore.isSetupRequired(),
       ...(principal ? { user: publicUser(principal) } : {})
     });
+  });
+
+  router.post('/setup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    if (!provisioningStore.isSetupRequired()) {
+      return c.json({ error: 'Owner setup has already been completed' }, 409);
+    }
+    if (!ownerSetupAllowed(c)) {
+      return c.json({
+        error: 'Owner setup is only allowed from the server host\'s local or configured setup network'
+      }, 403);
+    }
+
+    let body: { username?: unknown; password?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A username and password are required' }, 400);
+    }
+    const username = validUsername(body.username);
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!username || password.length < 8 || password.length > 4096) {
+      return c.json({ error: 'Username and a password of at least 8 characters are required' }, 400);
+    }
+
+    try {
+      const user = provisioningStore.completeOwnerSetup(username, password);
+      const token = createSession(sessionStore, user.id);
+      setSessionCookie(c, token);
+      return c.json({ authenticated: true, user: publicUser(user) }, 201);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'SETUP_ALREADY_COMPLETED') {
+        return c.json({ error: 'Owner setup has already been completed' }, 409);
+      }
+      const response = accountError(error);
+      return c.json({ error: response.message }, response.status);
+    }
   });
 
   router.post('/login', async (c) => {
     c.header('Cache-Control', 'no-store');
     if (!isAuthConfigured(userStore)) {
-      return c.json({ error: 'Set ADMIN_PASSWORD or ADMIN_TOKEN on the server before signing in' }, 503);
+      return c.json({ error: 'The server owner must complete setup before anyone can sign in' }, 503);
     }
 
     const key = loginKey(c);
@@ -358,29 +446,64 @@ export function createAuthRouter(
       return c.json({ error: 'A password or token is required' }, 400);
     }
     const password = typeof body.password === 'string' ? body.password : '';
-    const username = body.username === undefined ? 'admin' : validUsername(body.username);
+    const username = validUsername(body.username);
     const user = username ? userStore.findByUsername(username) : null;
     const passwordMatches = Boolean(user?.active && password.length <= 4096 &&
       userStore.credentialMatches(user.id, 'password', password));
-    // ADMIN_TOKEN historically worked in the password-only browser form.
-    const legacyTokenMatches = Boolean(body.username === undefined && user?.id === ADMIN_USER_ID &&
-      user.active && password.length <= 4096 &&
-      userStore.credentialMatches(user.id, 'api_token', password));
-    if (!user || (!passwordMatches && !legacyTokenMatches)) {
+    if (!user || !passwordMatches) {
       recordLoginFailure(key);
       return c.json({ error: 'Invalid username or credential' }, 401);
     }
 
     loginAttempts.delete(key);
     const token = createSession(sessionStore, user.id);
-    setCookie(c, SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'Strict',
-      secure: requestIsSecure(c),
-      path: '/',
-      maxAge: SESSION_TTL_SECONDS
-    });
+    setSessionCookie(c, token);
     return c.json({ authenticated: true, user: publicUser(user) });
+  });
+
+  router.post('/invites/inspect', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    let body: { token?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A valid invite token is required' }, 400);
+    }
+    const token = typeof body.token === 'string' && body.token.length <= 256 ? body.token : '';
+    const invite = token ? provisioningStore.inspectInvite(token) : null;
+    if (!invite) return c.json({ error: 'This invite is invalid, expired, or already used' }, 404);
+    return c.json({ invite });
+  });
+
+  router.post('/signup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    if (provisioningStore.isSetupRequired()) {
+      return c.json({ error: 'The server owner must complete setup first' }, 409);
+    }
+    let body: { token?: unknown; username?: unknown; password?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A valid invite, username, and password are required' }, 400);
+    }
+    const token = typeof body.token === 'string' && body.token.length <= 256 ? body.token : '';
+    const username = validUsername(body.username);
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!token || !username || password.length < 8 || password.length > 4096) {
+      return c.json({ error: 'A valid invite, username, and password of at least 8 characters are required' }, 400);
+    }
+    try {
+      const user = provisioningStore.acceptInvite(token, username, password);
+      const sessionToken = createSession(sessionStore, user.id);
+      setSessionCookie(c, sessionToken);
+      return c.json({ authenticated: true, user: publicUser(user) }, 201);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'INVITE_INVALID') {
+        return c.json({ error: 'This invite is invalid, expired, or already used' }, 404);
+      }
+      const response = accountError(error);
+      return c.json({ error: response.message }, response.status);
+    }
   });
 
   router.post('/logout', (c) => {
@@ -438,13 +561,7 @@ export function createAuthRouter(
     profileSwitchAttempts.delete(attemptKey);
     const replacementToken = createSession(sessionStore, target.id);
     sessionStore.invalidate(hashSessionToken(currentToken));
-    setCookie(c, SESSION_COOKIE, replacementToken, {
-      httpOnly: true,
-      sameSite: 'Strict',
-      secure: requestIsSecure(c),
-      path: '/',
-      maxAge: SESSION_TTL_SECONDS
-    });
+    setSessionCookie(c, replacementToken);
     c.header('Cache-Control', 'no-store');
     return c.json({ authenticated: true, user: publicUser(target) });
   });
@@ -455,6 +572,44 @@ export function createAuthRouter(
     return c.json({ users: userStore.list().map((user) => ({
       ...publicUser(user), active: user.active
     })) });
+  });
+
+  router.get('/invites', (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    return c.json({ invites: provisioningStore.listInvites() });
+  });
+
+  router.post('/invites', async (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    let body: { role?: unknown; expiresInHours?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A valid invite body is required' }, 400);
+    }
+    const role = body.role ?? 'viewer';
+    const expiresInHours = body.expiresInHours ?? 168;
+    if (!validRole(role) || !Number.isInteger(expiresInHours) ||
+      (expiresInHours as number) < 1 || (expiresInHours as number) > 720) {
+      return c.json({ error: 'Role and an expiration between 1 and 720 hours are required' }, 400);
+    }
+    const invite = provisioningStore.createInvite(
+      principal.id,
+      role,
+      Date.now() + (expiresInHours as number) * 60 * 60 * 1000
+    );
+    return c.json({ invite }, 201);
+  });
+
+  router.delete('/invites/:id', (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    if (!provisioningStore.revokeInvite(c.req.param('id'))) {
+      return c.json({ error: 'Pending invite not found' }, 404);
+    }
+    return c.json({ revoked: true });
   });
 
   router.post('/users', async (c) => {

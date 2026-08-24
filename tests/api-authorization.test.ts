@@ -6,6 +6,7 @@ import path from 'path';
 import { AccessControlStore } from '../apps/server/src/db/access-control';
 import { db, initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
 import { SqliteUserStore } from '../apps/server/src/db/user-store';
+import { AccountProvisioningStore } from '../apps/server/src/db/account-provisioning';
 import server from '../apps/server/src/index';
 
 describe('API authorization boundaries', () => {
@@ -38,6 +39,7 @@ describe('API authorization boundaries', () => {
     users.setCredential(viewerId, 'api_token', viewerToken);
     users.setCredential(viewerId, 'password', viewerPassword);
     users.setCredential(deniedViewerId, 'api_token', deniedViewerToken);
+    new AccountProvisioningStore(db).claimLegacyOwnerIfConfigured(adminId);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-api-authorization-'));
     const mediaPath = path.join(fixtureRoot, 'private-video.mp4');
