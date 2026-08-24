@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { initDatabase } from '../apps/server/src/db';
 import {
+  DATABASE_MIGRATIONS,
   runDatabaseMigrations,
   type DatabaseMigration
 } from '../apps/server/src/db/migrations';
@@ -119,7 +120,8 @@ describe('database migrations', () => {
         WHERE type = 'table'
           AND name IN (
             'libraries', 'media_items', 'external_subtitles',
-            'watch_progress', 'settings', 'schema_migrations'
+            'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
+            'users', 'user_credentials', 'user_library_access', 'user_permissions'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -127,14 +129,23 @@ describe('database migrations', () => {
       expect(migrations).toEqual([
         { version: 1, name: 'initial_schema' },
         { version: 2, name: 'external_subtitles' },
-        { version: 3, name: 'watch_progress_users' }
+        { version: 3, name: 'watch_progress_users' },
+        { version: 4, name: 'persistent_auth_sessions' },
+        { version: 5, name: 'multi_user_accounts' },
+        { version: 6, name: 'user_library_permissions' },
+        { version: 7, name: 'media_content_ratings' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
+        'auth_sessions',
         'external_subtitles',
         'libraries',
         'media_items',
         'schema_migrations',
         'settings',
+        'user_credentials',
+        'user_library_access',
+        'user_permissions',
+        'users',
         'watch_progress'
       ]);
       expect(progress).toEqual({
@@ -201,7 +212,44 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 7 });
+      expect(database.query(`
+        SELECT id, username, role, active FROM users WHERE id = 'admin'
+      `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('preserves legacy admin sessions while adding account foreign keys', () => {
+    const database = new Database(':memory:');
+    try {
+      database.run('PRAGMA foreign_keys = ON');
+      runDatabaseMigrations(database, DATABASE_MIGRATIONS.slice(0, 4));
+      database.run(`
+        INSERT INTO auth_sessions (
+          token_hash, user_id, created_at, expires_at, last_used_at
+        ) VALUES (?, 'admin', 1000, 9999999999999, 1000)
+      `, ['a'.repeat(64)]);
+
+      runDatabaseMigrations(database);
+
+      expect(database.query(`
+        SELECT token_hash, user_id FROM auth_sessions
+      `).get()).toEqual({ token_hash: 'a'.repeat(64), user_id: 'admin' });
+      const foreignKeys = database.query('PRAGMA foreign_key_list(auth_sessions)').all() as Array<{
+        table: string;
+        from: string;
+        to: string;
+        on_delete: string;
+      }>;
+      expect(foreignKeys).toContainEqual(expect.objectContaining({
+        table: 'users',
+        from: 'user_id',
+        to: 'id',
+        on_delete: 'CASCADE'
+      }));
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
       database.close();

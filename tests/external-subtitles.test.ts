@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { convertSrtToVtt, findExternalSubtitles } from '../apps/server/src/scanner/subtitles';
-import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
+import { db, initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
+import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanLibrary } from '../apps/server/src/scanner/indexer';
 import { transcoder } from '../apps/server/src/transcoder/engine';
@@ -20,10 +22,21 @@ const SAMPLE_SRT = [
 ].join('\r\n');
 
 describe('External subtitles (.srt sidecars)', () => {
+  const adminId = `external-subs-admin-${crypto.randomUUID()}`;
+  const adminToken = `external-subs-token-${crypto.randomUUID()}`;
   let fixtureRoot: string;
+
+  function adminRequest(pathname: string): Promise<Response> {
+    return apiRouter.request(pathname, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+  }
 
   beforeAll(() => {
     initDatabase();
+    const users = new SqliteUserStore(db);
+    users.create(adminId, adminId, 'admin');
+    users.setCredential(adminId, 'api_token', adminToken);
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-external-subs-'));
     fs.writeFileSync(path.join(fixtureRoot, 'Sample.Movie.2020.mkv'), 'fixture');
     fs.writeFileSync(path.join(fixtureRoot, 'Sample.Movie.2020.srt'), SAMPLE_SRT);
@@ -34,6 +47,7 @@ describe('External subtitles (.srt sidecars)', () => {
   });
 
   afterAll(() => {
+    db.run('DELETE FROM users WHERE id = ?', [adminId]);
     const expectedPrefix = path.join(os.tmpdir(), 'caster-external-subs-');
     if (fixtureRoot.startsWith(expectedPrefix)) {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -108,7 +122,7 @@ describe('External subtitles (.srt sidecars)', () => {
     });
 
     it('serves an external sidecar as WebVTT via the subtitles route', async () => {
-      const response = await apiRouter.request(`/media/${itemId}/subtitles/1001`);
+      const response = await adminRequest(`/media/${itemId}/subtitles/1001`);
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toContain('text/vtt');
 
@@ -125,7 +139,7 @@ describe('External subtitles (.srt sidecars)', () => {
       fs.renameSync(target.path, `${target.path}.bak`);
 
       try {
-        const response = await apiRouter.request(`/media/${itemId}/subtitles/${orphanIndex}`);
+        const response = await adminRequest(`/media/${itemId}/subtitles/${orphanIndex}`);
         expect(response.status).toBe(404);
       } finally {
         fs.renameSync(`${target.path}.bak`, target.path);
@@ -142,7 +156,7 @@ describe('External subtitles (.srt sidecars)', () => {
       console.error = () => {};
 
       try {
-        const response = await apiRouter.request(`/media/${itemId}/subtitles/0`);
+        const response = await adminRequest(`/media/${itemId}/subtitles/0`);
         expect(response.status).toBe(500);
         expect(await response.text()).toBe('Subtitle extraction failed');
       } finally {

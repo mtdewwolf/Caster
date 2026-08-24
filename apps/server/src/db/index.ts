@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import type { Library, MediaItem, Series, SeriesSeason, WatchProgress } from '../types';
+import type { ContentRatingScope } from '../types';
+import { contentRatingLevel, normalizeContentRating } from '../content-ratings';
 import {
   migrateLegacyWatchProgressToUsers,
   runDatabaseMigrations
@@ -78,14 +80,16 @@ export const migrateWatchProgressToUsers = migrateLegacyWatchProgressToUsers;
 // ---------------- Helper Queries ---------------- //
 
 export const LibraryModel = {
-  getAll: (): Library[] => {
+  getAll: (options: { contentRatingScope?: ContentRatingScope } = {}): Library[] => {
+    const params: any[] = [];
+    const ratingClause = contentRatingScopeClause('m', options.contentRatingScope, params);
     const rows = db.query(`
       SELECT l.*, COUNT(m.id) as item_count 
       FROM libraries l
-      LEFT JOIN media_items m ON l.id = m.library_id
+      LEFT JOIN media_items m ON l.id = m.library_id AND ${ratingClause}
       GROUP BY l.id
       ORDER BY l.name ASC
-    `).all() as (Library & { item_count: number })[];
+    `).all(...params) as (Library & { item_count: number })[];
     return rows;
   },
 
@@ -160,7 +164,15 @@ export const ExternalSubtitleModel = {
 };
 
 export const MediaModel = {
-  getById: (id: string, userId: string): MediaItem | null => {
+  getById: (
+    id: string,
+    userId: string,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem | null => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
     const row = db.query(`
       SELECT m.*, l.name as library_name, 
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
@@ -169,8 +181,8 @@ export const MediaModel = {
       FROM media_items m
       JOIN libraries l ON m.library_id = l.id
       LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
-      WHERE m.id = ?
-    `).get(userId, id) as any;
+      WHERE m.id = ? AND ${scopeClause} AND ${ratingClause}
+    `).get(userId, id, ...scopeParams) as any;
 
     if (!row) return null;
     return formatMediaRow(row);
@@ -184,6 +196,8 @@ export const MediaModel = {
     limit?: number;
     offset?: number;
     sort?: string;
+    allowedLibraryIds?: readonly string[];
+    contentRatingScope?: ContentRatingScope;
   } = {}): { items: MediaItem[]; total: number } => {
     let whereClauses: string[] = [];
     let params: any[] = [];
@@ -192,6 +206,8 @@ export const MediaModel = {
       whereClauses.push('m.library_id = ?');
       params.push(options.libraryId);
     }
+    whereClauses.push(libraryScopeClause('m', options.allowedLibraryIds, params));
+    whereClauses.push(contentRatingScopeClause('m', options.contentRatingScope, params));
     if (options.type) {
       whereClauses.push('m.type = ?');
       params.push(options.type);
@@ -246,9 +262,17 @@ export const MediaModel = {
     };
   },
 
-  getProgressItems: (userId: string, options: { status?: string; limit?: number } = {}): MediaItem[] => {
+  getProgressItems: (userId: string, options: {
+    status?: string;
+    limit?: number;
+    allowedLibraryIds?: readonly string[];
+    contentRatingScope?: ContentRatingScope;
+  } = {}): MediaItem[] => {
     const whereClauses = ['p.user_id = ?'];
     const params: any[] = [userId];
+
+    whereClauses.push(libraryScopeClause('m', options.allowedLibraryIds, params));
+    whereClauses.push(contentRatingScopeClause('m', options.contentRatingScope, params));
 
     if (options.status === 'in_progress') {
       whereClauses.push('p.completed = 0');
@@ -275,7 +299,15 @@ export const MediaModel = {
     return rows.map(formatMediaRow);
   },
 
-  getContinueWatching: (userId: string, limit: number = 10): MediaItem[] => {
+  getContinueWatching: (
+    userId: string,
+    limit: number = 10,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem[] => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
@@ -286,9 +318,10 @@ export const MediaModel = {
       JOIN libraries l ON m.library_id = l.id
       WHERE p.user_id = ?
         AND p.completed = 0 AND p.position_seconds > 10 AND p.progress_percent < 95
+        AND ${scopeClause} AND ${ratingClause}
       ORDER BY p.last_watched_at DESC
       LIMIT ?
-    `).all(userId, limit) as any[];
+    `).all(userId, ...scopeParams, limit) as any[];
 
     return rows.map(formatMediaRow);
   },
@@ -301,14 +334,14 @@ export const MediaModel = {
         size_bytes, format, video_codec, width, height, resolution_label,
         frame_rate, bit_rate, is_hdr, audio_codec, audio_channels,
         audio_channel_layout, audio_language, streams_json, poster_path,
-        created_at, updated_at
+        content_rating, content_rating_level, created_at, updated_at
       ) VALUES (
         $id, $library_id, $title, $original_filename, $relative_path, $full_path,
         $type, $series_title, $season_number, $episode_number, $year, $duration,
         $size_bytes, $format, $video_codec, $width, $height, $resolution_label,
         $frame_rate, $bit_rate, $is_hdr, $audio_codec, $audio_channels,
         $audio_channel_layout, $audio_language, $streams_json, $poster_path,
-        $created_at, $updated_at
+        $content_rating, $content_rating_level, $created_at, $updated_at
       ) ON CONFLICT(full_path) DO UPDATE SET
         title = excluded.title,
         duration = excluded.duration,
@@ -327,6 +360,8 @@ export const MediaModel = {
         audio_language = excluded.audio_language,
         streams_json = excluded.streams_json,
         poster_path = excluded.poster_path,
+        content_rating = COALESCE(excluded.content_rating, media_items.content_rating),
+        content_rating_level = COALESCE(excluded.content_rating_level, media_items.content_rating_level),
         updated_at = excluded.updated_at
     `);
 
@@ -358,6 +393,8 @@ export const MediaModel = {
       $audio_language: item.audio_language || null,
       $streams_json: item.streams_json || '[]',
       $poster_path: item.poster_path || null,
+      $content_rating: normalizeContentRating(item.content_rating),
+      $content_rating_level: contentRatingLevel(item.content_rating),
       $created_at: item.created_at,
       $updated_at: item.updated_at
     });
@@ -365,6 +402,24 @@ export const MediaModel = {
 
   updatePosterPath: (id: string, posterPath: string) => {
     db.run('UPDATE media_items SET poster_path = ? WHERE id = ?', [posterPath, id]);
+  },
+
+  updateContentRating: (
+    id: string,
+    contentRating: string | null,
+    userId: string = 'admin'
+  ): MediaItem | null => {
+    const normalized = normalizeContentRating(contentRating);
+    db.run(`
+      UPDATE media_items
+      SET content_rating = ?, content_rating_level = ?, updated_at = ?
+      WHERE id = ?
+    `, [normalized, contentRatingLevel(normalized), new Date().toISOString(), id]);
+    return MediaModel.getById(id, userId);
+  },
+
+  delete: (id: string): void => {
+    db.run('DELETE FROM media_items WHERE id = ?', [id]);
   },
 
   deleteNotFoundInPaths: (libraryId: string, currentFullPaths: string[]) => {
@@ -376,7 +431,16 @@ export const MediaModel = {
     db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
   },
 
-  getBySeries: (libraryId: string, seriesTitle: string, userId: string): MediaItem[] => {
+  getBySeries: (
+    libraryId: string,
+    seriesTitle: string,
+    userId: string,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem[] => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
     const rows = db.query(`
       SELECT m.*, l.name as library_name,
              p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
@@ -386,8 +450,9 @@ export const MediaModel = {
       JOIN libraries l ON m.library_id = l.id
       LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
       WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
+        AND ${scopeClause} AND ${ratingClause}
       ORDER BY COALESCE(m.season_number, 0) ASC, COALESCE(m.episode_number, 0) ASC, m.title ASC
-    `).all(userId, libraryId, seriesTitle) as any[];
+    `).all(userId, libraryId, seriesTitle, ...scopeParams) as any[];
 
     return rows.map(formatMediaRow);
   }
@@ -427,7 +492,12 @@ function formatSeriesRow(row: any): Series {
 }
 
 export const SeriesModel = {
-  getAll: (userId: string, options: { libraryId?: string; search?: string } = {}): Series[] => {
+  getAll: (userId: string, options: {
+    libraryId?: string;
+    search?: string;
+    allowedLibraryIds?: readonly string[];
+    contentRatingScope?: ContentRatingScope;
+  } = {}): Series[] => {
     const clauses: string[] = [];
     const params: any[] = [];
 
@@ -435,6 +505,8 @@ export const SeriesModel = {
       clauses.push('m.library_id = ?');
       params.push(options.libraryId);
     }
+    clauses.push(libraryScopeClause('m', options.allowedLibraryIds, params));
+    clauses.push(contentRatingScopeClause('m', options.contentRatingScope, params));
     if (options.search) {
       clauses.push('m.series_title LIKE ?');
       params.push(`%${options.search}%`);
@@ -451,15 +523,33 @@ export const SeriesModel = {
     return rows.map(formatSeriesRow);
   },
 
-  getById: (id: string, userId: string): Series | null => {
+  getById: (
+    id: string,
+    userId: string,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): Series | null => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
     const rows = db.query(`
       ${SERIES_GROUP_SELECT}
+      AND ${scopeClause} AND ${ratingClause}
       GROUP BY m.library_id, m.series_title
-    `).all(userId) as any[];
+    `).all(userId, ...scopeParams) as any[];
     return rows.map(formatSeriesRow).find((s) => s.id === id) || null;
   },
 
-  getSeasons: (libraryId: string, seriesTitle: string, userId: string): SeriesSeason[] => {
+  getSeasons: (
+    libraryId: string,
+    seriesTitle: string,
+    userId: string,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): SeriesSeason[] => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
     const rows = db.query(`
       SELECT COALESCE(m.season_number, 0) as season_number,
              COUNT(*) as episode_count,
@@ -468,9 +558,10 @@ export const SeriesModel = {
       FROM media_items m
       LEFT JOIN watch_progress p ON p.media_id = m.id AND p.user_id = ?
       WHERE m.type = 'episode' AND m.library_id = ? AND m.series_title = ?
+        AND ${scopeClause} AND ${ratingClause}
       GROUP BY COALESCE(m.season_number, 0)
       ORDER BY season_number ASC
-    `).all(userId, libraryId, seriesTitle) as any[];
+    `).all(userId, libraryId, seriesTitle, ...scopeParams) as any[];
 
     return rows.map((row) => ({
       season_number: row.season_number,
@@ -480,6 +571,32 @@ export const SeriesModel = {
     }));
   }
 };
+
+function libraryScopeClause(
+  tableAlias: string,
+  allowedLibraryIds: readonly string[] | undefined,
+  params: any[]
+): string {
+  if (allowedLibraryIds === undefined) return '1 = 1';
+  if (allowedLibraryIds.length === 0) return '1 = 0';
+  params.push(...allowedLibraryIds);
+  return `${tableAlias}.library_id IN (${allowedLibraryIds.map(() => '?').join(', ')})`;
+}
+
+function contentRatingScopeClause(
+  tableAlias: string,
+  scope: ContentRatingScope | undefined,
+  params: any[]
+): string {
+  if (!scope) return '1 = 1';
+  if (scope.maxLevel === null) {
+    return scope.allowUnrated ? '1 = 1' : `${tableAlias}.content_rating_level IS NOT NULL`;
+  }
+  params.push(scope.maxLevel);
+  return scope.allowUnrated
+    ? `(${tableAlias}.content_rating_level IS NULL OR ${tableAlias}.content_rating_level <= ?)`
+    : `(${tableAlias}.content_rating_level IS NOT NULL AND ${tableAlias}.content_rating_level <= ?)`;
+}
 
 function buildFtsQuery(search: string): string {
   const tokens = search.match(/[\p{L}\p{N}_]+/gu) || [];
@@ -590,6 +707,8 @@ function formatMediaRow(row: any): MediaItem {
     audio_language: row.audio_language,
     streams_json: row.streams_json,
     poster_path: row.poster_path,
+    content_rating: row.content_rating ?? undefined,
+    content_rating_level: row.content_rating_level ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
     library_name: row.library_name,

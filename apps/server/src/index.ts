@@ -1,29 +1,29 @@
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { serveStatic } from 'hono/bun';
 import fs from 'fs';
 import path from 'path';
 import { initDatabase } from './db';
 import { apiRouter } from './routes/api';
 import { transcoder } from './transcoder/engine';
-import { authRouter, isAuthConfigured, requireAdminForMutations } from './auth';
+import {
+  authRouter,
+  isAuthConfigured,
+  startSessionPruner
+} from './auth';
+import {
+  apiRequestSecurity,
+  openModeIsExplicitlyEnabled
+} from './security/request-security';
 
 // Initialize SQLite database
 initDatabase();
 
 const app = new Hono();
 
-// Enable permissive CORS for Tailscale mesh networks and local IPs
-app.use('*', cors({
-  origin: '*',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Range'],
-  exposeHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
-}));
-
-// All API writes require an authenticated admin session. Reads stay public so
-// anyone on the LAN can browse and stream without an account.
-app.use('/api/*', requireAdminForMutations);
+// Protected deployments require a principal for reads and streams, restrict
+// administration to admins, and enforce trusted-origin/CSRF checks. Explicit
+// local/open mode preserves account-free media browsing.
+app.use('/api/*', apiRequestSecurity);
 app.route('/api/auth', authRouter);
 
 // Mount API router
@@ -63,19 +63,31 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
 if (import.meta.main) {
-console.log(`\n======================================================`);
-console.log(`🚀 Caster Media Server starting on http://${HOST}:${PORT}`);
-console.log(`🌐 Tailscale & Local Network Ready`);
-const hw = transcoder.getHardwareStatus();
-console.log(`⚡ Hardware Acceleration: [${hw.accelType.toUpperCase()}]`);
-console.log(`   - Intel QSV: ${hw.qsvSupported ? '✓ Available' : '✗'}`);
-console.log(`   - NVIDIA NVENC: ${hw.nvencSupported ? '✓ Available' : '✗'}`);
-console.log(`   - VAAPI: ${hw.vaapiSupported ? '✓ Available' : '✗'}`);
-console.log(`======================================================\n`);
+  startSessionPruner();
+  console.log(`\n======================================================`);
+  console.log(`🚀 Caster Media Server starting on http://${HOST}:${PORT}`);
+  console.log(`🌐 Tailscale & Local Network Ready`);
+  const hw = transcoder.getHardwareStatus();
+  console.log(`⚡ Hardware Acceleration: [${hw.accelType.toUpperCase()}]`);
+  console.log(`   - Intel QSV: ${hw.qsvSupported ? '✓ Available' : '✗'}`);
+  console.log(`   - NVIDIA NVENC: ${hw.nvencSupported ? '✓ Available' : '✗'}`);
+  console.log(`   - VAAPI: ${hw.vaapiSupported ? '✓ Available' : '✗'}`);
+  console.log(`======================================================\n`);
 
-if (!isAuthConfigured()) {
-  console.warn('WARNING: Admin mutations are locked until ADMIN_PASSWORD or ADMIN_TOKEN is configured.');
-}
+  if (!isAuthConfigured()) {
+    if (openModeIsExplicitlyEnabled()) {
+      console.warn('SECURITY WARNING: CASTER_OPEN_MODE=true enables unauthenticated catalog and playback access.');
+      console.warn(`Anonymous clients are limited to CASTER_OPEN_NETWORKS=${process.env.CASTER_OPEN_NETWORKS ?? '127.0.0.0/8,::1/128'}.`);
+      console.warn('Administrative routes remain locked until an admin credential is configured.');
+    } else {
+      console.warn('SECURITY NOTICE: No admin credential is configured. Only direct loopback clients may browse or play media.');
+      console.warn('Set ADMIN_PASSWORD/ADMIN_TOKEN for protected access, or explicitly configure CASTER_OPEN_MODE and CASTER_OPEN_NETWORKS.');
+    }
+  }
+
+  if (process.env.CASTER_OPEN_MODE && !openModeIsExplicitlyEnabled()) {
+    console.warn(`SECURITY NOTICE: Ignoring CASTER_OPEN_MODE=${JSON.stringify(process.env.CASTER_OPEN_MODE)}; only the value "true" (case-insensitive) enables it.`);
+  }
 }
 
 export default {

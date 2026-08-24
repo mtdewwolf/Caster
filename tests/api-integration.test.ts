@@ -10,7 +10,8 @@ import {
   authRouter,
   requireAdminForMutations
 } from '../apps/server/src/auth';
-import { initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
+import { db, initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
+import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
 import server from '../apps/server/src/index';
@@ -39,6 +40,7 @@ describe('API integration regressions', () => {
     process.env.ADMIN_PASSWORD = 'integration-password';
     process.env.ADMIN_TOKEN = adminToken;
     initDatabase();
+    new SqliteUserStore(db).setCredential(ADMIN_USER_ID, 'api_token', adminToken);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-api-integration-'));
     mediaPath = path.join(fixtureRoot, 'Range.Test.2026.mp4');
@@ -174,9 +176,9 @@ describe('API integration regressions', () => {
     ProgressModel.upsert(PUBLIC_USER_ID, mediaId, 20, 100);
     ProgressModel.upsert(ADMIN_USER_ID, mediaId, 40, 100);
 
-    const publicItem = await app.request(`/api/media/${mediaId}`);
+    const anonymousItem = await app.request(`/api/media/${mediaId}`);
     const adminItem = await adminRequest(`/api/media/${mediaId}`);
-    expect((await publicItem.json()).item.progress.position_seconds).toBe(20);
+    expect(anonymousItem.status).toBe(404);
     expect((await adminItem.json()).item.progress.position_seconds).toBe(40);
 
     const update = await adminRequest(`/api/media/${mediaId}/progress`, {
@@ -218,12 +220,12 @@ describe('API integration regressions', () => {
   });
 
   it('serves valid byte ranges and rejects malformed or unsatisfiable ranges', async () => {
-    const full = await app.request(`/api/media/${mediaId}/stream`);
+    const full = await adminRequest(`/api/media/${mediaId}/stream`);
     expect(full.status).toBe(200);
     expect(full.headers.get('Content-Length')).toBe('10');
     expect(await full.text()).toBe('0123456789');
 
-    const partial = await app.request(`/api/media/${mediaId}/stream`, {
+    const partial = await adminRequest(`/api/media/${mediaId}/stream`, {
       headers: { Range: 'bytes=2-5' }
     });
     expect(partial.status).toBe(206);
@@ -231,14 +233,14 @@ describe('API integration regressions', () => {
     expect(partial.headers.get('Content-Length')).toBe('4');
     expect(await partial.text()).toBe('2345');
 
-    const suffix = await app.request(`/api/media/${mediaId}/stream`, {
+    const suffix = await adminRequest(`/api/media/${mediaId}/stream`, {
       headers: { Range: 'bytes=-3' }
     });
     expect(suffix.status).toBe(206);
     expect(await suffix.text()).toBe('789');
 
     for (const range of ['bytes=20-30', 'bytes=5-2', 'bytes=0-1,4-5', 'items=0-1']) {
-      const response = await app.request(`/api/media/${mediaId}/stream`, {
+      const response = await adminRequest(`/api/media/${mediaId}/stream`, {
         headers: { Range: range }
       });
       expect(response.status).toBe(416);
@@ -247,16 +249,16 @@ describe('API integration regressions', () => {
   });
 
   it('validates HLS, subtitle, hardware, and cache control requests', async () => {
-    const master = await app.request(`/api/media/${mediaId}/hls/master.m3u8`);
+    const master = await adminRequest(`/api/media/${mediaId}/hls/master.m3u8`);
     expect(master.status).toBe(200);
     expect(master.headers.get('Content-Type')).toContain('application/vnd.apple.mpegurl');
     expect(await master.text()).toContain(`/api/media/${mediaId}/hls/720p/index.m3u8`);
 
-    const invalidQuality = await app.request(`/api/media/${mediaId}/hls/ultra/index.m3u8`);
-    const invalidSegment = await app.request(
+    const invalidQuality = await adminRequest(`/api/media/${mediaId}/hls/ultra/index.m3u8`);
+    const invalidSegment = await adminRequest(
       `/api/media/${mediaId}/hls/720p/segment-0.ts.extra`
     );
-    const invalidSubtitle = await app.request(`/api/media/${mediaId}/subtitles/not-a-number`);
+    const invalidSubtitle = await adminRequest(`/api/media/${mediaId}/subtitles/not-a-number`);
     expect(invalidQuality.status).toBe(400);
     expect(invalidSegment.status).toBe(400);
     expect(invalidSubtitle.status).toBe(400);
@@ -278,7 +280,7 @@ describe('API integration regressions', () => {
   });
 
   it('exposes safe transcode diagnostics and returns JSON for unknown API routes', async () => {
-    const diagnostics = await app.request('/api/system/transcodes');
+    const diagnostics = await adminRequest('/api/system/transcodes');
     expect(diagnostics.status).toBe(200);
     expect(await diagnostics.json()).toMatchObject({
       activeTranscodes: 0,
@@ -286,7 +288,9 @@ describe('API integration regressions', () => {
       sessions: []
     });
 
-    const missing = await server.fetch(new Request('http://localhost/api/does-not-exist'));
+    const missing = await server.fetch(new Request('http://localhost/api/does-not-exist', {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }));
     expect(missing.status).toBe(404);
     expect(missing.headers.get('Content-Type')).toContain('application/json');
     expect(await missing.json()).toEqual({ error: 'API route not found' });

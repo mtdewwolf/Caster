@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import type { MediaMetadata, MediaStreamTrack, MediaType } from '../types';
+import { normalizeContentRating } from '../content-ratings';
 
 export function parseFilename(filename: string, libraryType: 'movies' | 'tv' | 'music' | 'home_videos'): {
   title: string;
@@ -113,6 +114,11 @@ export async function extractMediaMetadata(filePath: string): Promise<MediaMetad
         const duration = parseFloat(format.duration || '0');
         const size = parseInt(format.size || '0', 10);
         const bit_rate = parseInt(format.bit_rate || '0', 10);
+        const formatTags = format.tags || {};
+        const contentRating = normalizeContentRating(
+          formatTags.content_rating || formatTags.CONTENT_RATING ||
+          formatTags.rating || formatTags.RATING
+        );
 
         const streams: MediaStreamTrack[] = rawStreams.map((s: any) => ({
           index: s.index,
@@ -189,7 +195,8 @@ export async function extractMediaMetadata(filePath: string): Promise<MediaMetad
           format_name: format.format_name,
           video: videoMeta,
           audio: audioMeta,
-          streams
+          streams,
+          content_rating: contentRating ?? undefined
         });
       } catch (err) {
         console.error('Error parsing ffprobe output:', err);

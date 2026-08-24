@@ -1,5 +1,6 @@
 import React from 'react';
-import { Film, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut } from 'lucide-react';
+import { Film, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut, UsersRound } from 'lucide-react';
+import type { AuthUser } from '../api';
 import type { SystemHardwareStatus } from '../types';
 
 export type AppView = 'library' | 'progress';
@@ -14,8 +15,10 @@ interface NavbarProps {
   onOpenSettings: () => void;
   hardware: SystemHardwareStatus | null;
   isScanning: boolean;
+  user?: AuthUser;
   isAdmin: boolean;
   onLogin: () => void;
+  onSwitchProfile: () => void;
   onLogout: () => void;
 }
 
@@ -29,15 +32,19 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSettings,
   hardware,
   isScanning,
+  user,
   isAdmin,
   onLogin,
+  onSwitchProfile,
   onLogout
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 sm:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
       {/* Brand & Main Nav */}
       <div className="flex items-center gap-8">
-        <div
+        <button
+          type="button"
+          aria-label="Caster home"
           className="flex items-center gap-2.5 cursor-pointer"
           onClick={() => {
             onViewChange('library');
@@ -55,7 +62,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </div>
           </div>
-        </div>
+        </button>
 
         {/* Categories */}
         <nav className="hidden md:flex items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-white/5 text-xs font-medium">
@@ -139,6 +146,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 transform -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
+            aria-label="Search media"
             placeholder="Search titles, series..."
             value={searchQuery}
             onChange={(e) => {
@@ -169,25 +177,36 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         )}
 
-        {isAdmin ? (
-          <button
-            type="button"
-            onClick={onLogout}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-950/40 hover:bg-blue-900/50 border border-blue-500/30 rounded-lg text-blue-300 text-[11px] font-medium transition-colors"
-            title="Sign out of admin mode"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Admin</span>
-          </button>
+        {user ? (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={onSwitchProfile}
+              className="flex items-center gap-1.5 rounded-l-lg border border-blue-500/30 bg-blue-950/40 px-2.5 py-1.5 text-[11px] font-medium text-blue-300 transition-colors hover:bg-blue-900/50"
+              title="Switch profile"
+            >
+              <UsersRound className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{user.username}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="rounded-r-lg border border-l-0 border-blue-500/30 bg-blue-950/40 p-1.5 text-blue-300 transition-colors hover:bg-blue-900/50"
+              title={`Sign out ${user.username}`}
+              aria-label={`Sign out ${user.username}`}
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </button>
+          </div>
         ) : (
           <button
             type="button"
             onClick={onLogin}
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg text-slate-300 hover:text-white text-[11px] font-medium transition-colors"
-            title="Sign in for admin access"
+            title="Sign in to Caster"
           >
             <LockKeyhole className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Admin login</span>
+            <span className="hidden sm:inline">Sign in</span>
           </button>
         )}
 
@@ -205,16 +224,18 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Settings button */}
-        <button
-          onClick={onOpenSettings}
-          className="p-2 bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-300 hover:text-white rounded-xl transition-colors relative"
-          title="Server Settings"
-        >
-          <Settings className="w-4 h-4" />
-          {isScanning && (
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping" />
-          )}
-        </button>
+        {!user || isAdmin ? (
+          <button
+            onClick={onOpenSettings}
+            className="p-2 bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-300 hover:text-white rounded-xl transition-colors relative"
+            title="Server Settings"
+          >
+            <Settings className="w-4 h-4" />
+            {isScanning ? (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping" />
+            ) : null}
+          </button>
+        ) : null}
       </div>
     </header>
   );
