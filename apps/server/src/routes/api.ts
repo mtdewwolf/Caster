@@ -5,6 +5,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { db, ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { AccessControlStore, type AccessPrincipal } from '../db/access-control';
+import { createMusicLibraryStore } from '../db/music-library';
+import { MediaMarkerStore } from '../db/media-marker-store';
 import { clientIsRemote } from '../security/client-network';
 import {
   anonymousOpenAccessAllowed,
@@ -27,9 +29,14 @@ import {
   resolvePrincipal,
   type AuthPrincipal
 } from '../auth';
+import { createMusicRouter } from './music';
+import { createPlaybackRouter } from './playback';
+import { playlistRouter } from './playlists';
+import { createWatchTogetherRouter } from './watch-together';
 
 export const apiRouter = new Hono();
 const accessControl = new AccessControlStore(db);
+const markerStore = new MediaMarkerStore(db);
 
 const VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso'
@@ -1067,6 +1074,58 @@ apiRouter.post('/media/:id/progress', async (c) => {
   );
   return c.json({ progress });
 });
+
+apiRouter.route('/music', createMusicRouter({
+  store: createMusicLibraryStore(db),
+  getUserId: (c) => getCurrentUserId(c),
+  getScope: (c) => ({
+    allowedLibraryIds: libraryScopeFor(c),
+    contentRatingScope: contentRatingScopeFor(c)
+  }),
+  serializeTrack: (c, track) => viewerSafeMedia(resolvePrincipal(c), track)
+}));
+
+apiRouter.route('/playlists', playlistRouter);
+
+apiRouter.route('/watch-rooms', createWatchTogetherRouter({
+  getAuthenticatedUserId: (c) => resolvePrincipal(c)?.id ?? null,
+  resolveMedia: (c, id) => {
+    if (!mediaIsAccessible(c, id, 'stream')) return null;
+    return MediaModel.getById(
+      id,
+      getCurrentUserId(c),
+      libraryScopeFor(c),
+      contentRatingScopeFor(c)
+    );
+  }
+}));
+
+apiRouter.route('/media', createPlaybackRouter({
+  markerStore,
+  resolveMedia: (c, id) => {
+    if (!mediaIsAccessible(c, id)) return null;
+    return MediaModel.getById(
+      id,
+      getCurrentUserId(c),
+      libraryScopeFor(c),
+      contentRatingScopeFor(c)
+    );
+  },
+  resolveNextEpisode: (c, item) => {
+    if (!item.series_title) return null;
+    const items = MediaModel.getBySeries(
+      item.library_id,
+      item.series_title,
+      getCurrentUserId(c),
+      libraryScopeFor(c),
+      contentRatingScopeFor(c)
+    );
+    const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
+    const next = currentIndex >= 0 ? items[currentIndex + 1] : undefined;
+    return next ? viewerSafeMedia(resolvePrincipal(c), next) : null;
+  },
+  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
+}));
 
 // ---------------- Account Access Administration ---------------- //
 

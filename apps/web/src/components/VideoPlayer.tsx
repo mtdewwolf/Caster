@@ -13,18 +13,38 @@ import {
   Subtitles,
   ArrowLeft,
   Tv,
-  Check
+  Check,
+  Users,
+  Copy,
+  LogOut
 } from 'lucide-react';
-import type { MediaItem, MediaStreamTrack } from '../types';
+import type { MediaItem, MediaStreamTrack, PlaybackDescriptor } from '../types';
 import { api } from '../api';
+import type { WatchRoomLaunch } from '../features/watch-together/contracts';
+import { createWatchRoom, leaveWatchRoom } from '../features/watch-together/api';
+import { buildWatchRoomInviteUrl } from '../features/watch-together/invite-fragment';
+import { decideDriftCorrection } from '../features/watch-together/correction';
+import { useWatchRoom } from '../features/watch-together/use-watch-room';
 
 interface VideoPlayerProps {
   item: MediaItem;
   onClose: () => void;
   trackProgress: boolean;
+  onAdvance?: (item: MediaItem) => void;
+  watchRoom?: WatchRoomLaunch | null;
+  onWatchRoomStarted?: (room: WatchRoomLaunch) => void;
+  onWatchRoomEnded?: () => void;
 }
 
-export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackProgress }) => {
+export const VideoPlayer: React.FC<VideoPlayerProps> = ({
+  item,
+  onClose,
+  trackProgress,
+  onAdvance,
+  watchRoom,
+  onWatchRoomStarted,
+  onWatchRoomEnded
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -40,11 +60,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
   const [streamMode, setStreamMode] = useState<'direct' | 'hls'>('direct');
   const [selectedQuality, setSelectedQuality] = useState<'auto' | '1080p' | '720p' | '480p'>('auto');
   const [selectedSubtitle, setSelectedSubtitle] = useState<number | null>(null);
+  const [selectedAudio, setSelectedAudio] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverPos, setHoverPos] = useState<number>(0);
+  const [playbackDescriptor, setPlaybackDescriptor] = useState<PlaybackDescriptor>({
+    markers: [],
+    nextEpisode: null
+  });
+  const [watchAction, setWatchAction] = useState<string | null>(null);
+  const watchConnection = useWatchRoom(watchRoom?.roomId ?? null);
+  const isWatchHost = watchConnection.room?.self.role === 'host';
+  const canControlTimeline = !watchRoom || isWatchHost;
 
   const hideTimeoutRef = useRef<any>(null);
 
@@ -56,6 +85,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
 
   const subtitleTracks = streams.filter((s) => s.codec_type === 'subtitle');
   const audioTracks = streams.filter((s) => s.codec_type === 'audio');
+
+  useEffect(() => {
+    const preferences = watchConnection.room?.self.preferences;
+    if (!preferences) return;
+    setSelectedSubtitle(preferences.subtitleTrackIndex);
+    setSelectedAudio(preferences.audioTrackIndex);
+  }, [watchConnection.room?.self.preferences]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlaybackDescriptor({ markers: [], nextEpisode: null });
+    api.getPlaybackDescriptor(item.id)
+      .then((descriptor) => {
+        if (!cancelled) setPlaybackDescriptor(descriptor);
+      })
+      .catch((error) => console.warn('Playback markers unavailable:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
 
   // Initialize playback source
   useEffect(() => {
@@ -113,6 +162,64 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
     };
   }, [item.id, streamMode, selectedQuality]);
 
+  useEffect(() => {
+    if (selectedAudio === null) return;
+    const selectedPosition = audioTracks.findIndex((track) => track.index === selectedAudio);
+    if (selectedPosition < 0) return;
+    if (hlsRef.current && selectedPosition < hlsRef.current.audioTracks.length) {
+      hlsRef.current.audioTrack = selectedPosition;
+    }
+    const browserTracks = (videoRef.current as (HTMLVideoElement & {
+      audioTracks?: { length: number; [index: number]: { enabled: boolean } };
+    }) | null)?.audioTracks;
+    if (browserTracks && selectedPosition < browserTracks.length) {
+      for (let index = 0; index < browserTracks.length; index += 1) {
+        browserTracks[index].enabled = index === selectedPosition;
+      }
+    }
+  }, [selectedAudio, streamMode, item.id]);
+
+  useEffect(() => {
+    const event = watchConnection.timelineEvent;
+    const video = videoRef.current;
+    if (!event || !video || event.timeline.mediaId !== item.id) return;
+    // The host reports its real player position and is the room reference.
+    // A reconnect snapshot is the one event that must also realign the host.
+    if (isWatchHost && event.cause !== 'snapshot') return;
+
+    const correction = decideDriftCorrection({
+      localPositionSeconds: video.currentTime,
+      localPaused: video.paused,
+      targetPositionSeconds: event.timeline.positionSeconds,
+      targetPaused: event.timeline.paused
+    });
+    video.playbackRate = correction.playbackRate;
+    if (correction.kind === 'hard-sync') {
+      video.currentTime = correction.positionSeconds;
+      if (correction.paused) video.pause();
+      else void video.play().catch(() => setIsPlaying(false));
+    } else if (correction.kind === 'seek') {
+      video.currentTime = correction.positionSeconds;
+      if (!event.timeline.paused) void video.play().catch(() => setIsPlaying(false));
+    } else if (correction.kind === 'rate' && video.paused) {
+      void video.play().catch(() => setIsPlaying(false));
+    }
+  }, [watchConnection.timelineEvent?.sequence, isWatchHost, item.id]);
+
+  useEffect(() => {
+    if (!watchConnection.connected || !isWatchHost || !watchConnection.room) return;
+    const interval = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || !Number.isFinite(video.currentTime)) return;
+      watchConnection.sendHostReport(
+        watchConnection.room!.timeline.revision,
+        video.currentTime,
+        video.paused
+      );
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [watchConnection.connected, isWatchHost, watchConnection.room?.timeline.revision]);
+
   // Periodic progress tracking to server (every 5s)
   useEffect(() => {
     if (!trackProgress) return;
@@ -167,30 +274,88 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
 
   const togglePlay = () => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !canControlTimeline) return;
     if (video.paused) {
-      video.play();
+      void video.play();
       setIsPlaying(true);
+      if (watchRoom) watchConnection.sendCommand('play', video.currentTime);
     } else {
       video.pause();
       setIsPlaying(false);
+      if (watchRoom) watchConnection.sendCommand('pause', video.currentTime);
     }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     const video = videoRef.current;
-    if (video) {
+    if (video && canControlTimeline) {
       video.currentTime = time;
       setCurrentTime(time);
+      if (watchRoom) watchConnection.sendCommand('seek', time);
     }
   };
 
   const skipTime = (seconds: number) => {
     const video = videoRef.current;
-    if (video) {
-      video.currentTime = Math.max(0, Math.min(video.duration || duration, video.currentTime + seconds));
+    if (video && canControlTimeline) {
+      const position = Math.max(0, Math.min(video.duration || duration, video.currentTime + seconds));
+      video.currentTime = position;
+      if (watchRoom) watchConnection.sendCommand('seek', position);
     }
+  };
+
+  const activeMarker = playbackDescriptor.markers.find((marker) => (
+    currentTime >= marker.startSeconds && currentTime < marker.endSeconds
+  ));
+
+  const handleSkipMarker = () => {
+    if (!activeMarker || !canControlTimeline) return;
+    if (!watchRoom && activeMarker.type === 'credits' && playbackDescriptor.nextEpisode && onAdvance) {
+      onAdvance(playbackDescriptor.nextEpisode);
+      return;
+    }
+    const video = videoRef.current;
+    if (video) {
+      video.currentTime = activeMarker.endSeconds;
+      setCurrentTime(activeMarker.endSeconds);
+      if (watchRoom) watchConnection.sendCommand('seek', activeMarker.endSeconds);
+    }
+  };
+
+  const handleStartWatchRoom = async () => {
+    const video = videoRef.current;
+    if (!video || !onWatchRoomStarted) return;
+    setWatchAction('Creating room...');
+    try {
+      const created = await createWatchRoom(item.id, video.currentTime);
+      const inviteUrl = buildWatchRoomInviteUrl(created.roomId, created.inviteToken);
+      onWatchRoomStarted({ roomId: created.roomId, inviteUrl });
+      setWatchAction('Room ready');
+    } catch (error) {
+      setWatchAction(error instanceof Error ? error.message : 'Unable to create room');
+    }
+  };
+
+  const handleCopyInvite = async () => {
+    if (!watchRoom?.inviteUrl) return;
+    try {
+      await navigator.clipboard.writeText(watchRoom.inviteUrl);
+      setWatchAction('Invite copied');
+    } catch {
+      window.prompt('Copy this Watch Together invite', watchRoom.inviteUrl);
+      setWatchAction('Invite ready to copy');
+    }
+  };
+
+  const handleLeaveWatchRoom = async () => {
+    if (!watchRoom) return;
+    try {
+      await leaveWatchRoom(watchRoom.roomId);
+    } catch {
+      // The room may already have expired; leaving the local session is safe.
+    }
+    onWatchRoomEnded?.();
   };
 
   const toggleMute = () => {
@@ -226,13 +391,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
 
-      if (e.code === 'Space' || e.key === 'k') {
+      if ((e.code === 'Space' || e.key === 'k') && canControlTimeline) {
         e.preventDefault();
         togglePlay();
-      } else if (e.code === 'ArrowLeft' || e.key === 'j') {
+      } else if ((e.code === 'ArrowLeft' || e.key === 'j') && canControlTimeline) {
         e.preventDefault();
         skipTime(-10);
-      } else if (e.code === 'ArrowRight' || e.key === 'l') {
+      } else if ((e.code === 'ArrowRight' || e.key === 'l') && canControlTimeline) {
         e.preventDefault();
         skipTime(10);
       } else if (e.code === 'ArrowUp') {
@@ -268,7 +433,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, isMuted, onClose]);
+  }, [isPlaying, isMuted, onClose, canControlTimeline]);
 
   const formatTime = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -289,11 +454,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
       <video
         ref={videoRef}
         onTimeUpdate={handleTimeUpdate}
-        onEnded={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          if (!watchRoom && playbackDescriptor.nextEpisode && onAdvance) onAdvance(playbackDescriptor.nextEpisode);
+        }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onClick={togglePlay}
-        className="w-full h-full object-contain cursor-pointer"
+        className={`w-full h-full object-contain ${canControlTimeline ? 'cursor-pointer' : 'cursor-default'}`}
         playsInline
       >
         {selectedSubtitle !== null && (
@@ -305,6 +473,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
           />
         )}
       </video>
+
+      {activeMarker && canControlTimeline && (
+        <button
+          type="button"
+          onClick={handleSkipMarker}
+          className="absolute bottom-28 right-6 rounded-lg border border-white/20 bg-black/80 px-5 py-2.5 text-sm font-semibold text-white shadow-xl backdrop-blur transition-colors hover:bg-white hover:text-black focus:outline-none focus:ring-2 focus:ring-white"
+        >
+          {activeMarker.type === 'intro'
+            ? 'Skip Intro'
+            : playbackDescriptor.nextEpisode ? 'Next Episode' : 'Skip Credits'}
+        </button>
+      )}
 
       {/* Top Header Overlay */}
       <div
@@ -345,6 +525,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2 text-xs text-white">
+          {watchRoom ? (
+            <>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3 py-1.5">
+                {watchConnection.connected ? 'Together' : 'Reconnecting'} ·{' '}
+                {watchConnection.room?.participants.filter((participant) => participant.connected).length ?? 0}
+                {' '}watching · {isWatchHost ? 'Host' : 'Member'}
+              </span>
+              {watchRoom.inviteUrl && (
+                <button type="button" onClick={() => void handleCopyInvite()} className="rounded-full bg-white/15 p-2 hover:bg-white/25" title="Copy invite">
+                  <Copy className="h-4 w-4" />
+                </button>
+              )}
+              <button type="button" onClick={() => void handleLeaveWatchRoom()} className="rounded-full bg-white/15 p-2 hover:bg-rose-500/50" title="Leave room">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </>
+          ) : trackProgress ? (
+            <button type="button" onClick={() => void handleStartWatchRoom()} className="flex items-center gap-2 rounded-full bg-indigo-600/90 px-3 py-2 font-semibold hover:bg-indigo-500">
+              <Users className="h-4 w-4" /> Watch Together
+            </button>
+          ) : null}
+          {(watchAction || watchConnection.error) && (
+            <span className="max-w-48 truncate text-amber-200">{watchConnection.error || watchAction}</span>
+          )}
+        </div>
       </div>
 
       {/* Bottom Controls Overlay */}
@@ -380,6 +586,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
             step="0.1"
             value={currentTime}
             onChange={handleSeek}
+            disabled={!canControlTimeline}
             onMouseMove={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -387,7 +594,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
               setHoverTime(pos * duration);
             }}
             onMouseLeave={() => setHoverTime(null)}
-            className="w-full h-1.5 bg-transparent accent-blue-500 rounded-lg cursor-pointer appearance-none z-10 hover:h-2.5 transition-all"
+            className="w-full h-1.5 bg-transparent accent-blue-500 rounded-lg disabled:cursor-not-allowed cursor-pointer appearance-none z-10 hover:h-2.5 transition-all"
           />
         </div>
 
@@ -396,14 +603,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
           <div className="flex items-center gap-4">
             <button
               onClick={togglePlay}
-              className="p-2.5 rounded-full hover:bg-white/20 text-white transition-colors"
+              disabled={!canControlTimeline}
+              className="p-2.5 rounded-full hover:bg-white/20 disabled:opacity-40 text-white transition-colors"
             >
               {isPlaying ? <Pause className="w-6 h-6 fill-white" /> : <Play className="w-6 h-6 fill-white" />}
             </button>
 
             <button
               onClick={() => skipTime(-10)}
-              className="p-2 rounded-full hover:bg-white/20 text-gray-300 hover:text-white transition-colors"
+              disabled={!canControlTimeline}
+              className="p-2 rounded-full hover:bg-white/20 disabled:opacity-40 text-gray-300 hover:text-white transition-colors"
               title="Skip back 10s"
             >
               <RotateCcw className="w-5 h-5" />
@@ -411,7 +620,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
 
             <button
               onClick={() => skipTime(10)}
-              className="p-2 rounded-full hover:bg-white/20 text-gray-300 hover:text-white transition-colors"
+              disabled={!canControlTimeline}
+              className="p-2 rounded-full hover:bg-white/20 disabled:opacity-40 text-gray-300 hover:text-white transition-colors"
               title="Skip forward 10s"
             >
               <RotateCw className="w-5 h-5" />
@@ -467,6 +677,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
                   <button
                     onClick={() => {
                       setSelectedSubtitle(null);
+                      watchConnection.sendPreferences({ subtitleTrackIndex: null });
                       setShowSubtitleMenu(false);
                     }}
                     className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 flex items-center justify-between"
@@ -479,6 +690,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
                       key={sub.index}
                       onClick={() => {
                         setSelectedSubtitle(sub.index);
+                        watchConnection.sendPreferences({ subtitleTrackIndex: sub.index });
                         setShowSubtitleMenu(false);
                       }}
                       className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 flex items-center justify-between"
@@ -551,8 +763,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
                     </div>
                   )}
 
+                  {audioTracks.length > 0 && (
+                    <div>
+                      <div className="font-semibold text-gray-400 mb-1.5 uppercase text-[10px]">Audio track</div>
+                      <div className="space-y-1">
+                        {audioTracks.map((track) => (
+                          <button
+                            key={track.index}
+                            onClick={() => {
+                              setSelectedAudio(track.index);
+                              watchConnection.sendPreferences({ audioTrackIndex: track.index });
+                            }}
+                            className="w-full text-left px-2 py-1 rounded hover:bg-white/10 flex items-center justify-between"
+                          >
+                            <span>{track.language || track.title || `Track ${track.index}`}</span>
+                            {selectedAudio === track.index && <Check className="w-3.5 h-3.5 text-blue-400" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Speed */}
-                  <div>
+                  {!watchRoom && <div>
                     <div className="font-semibold text-gray-400 mb-1.5 uppercase text-[10px]">Playback Speed</div>
                     <div className="flex gap-1 overflow-x-auto">
                       {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
@@ -572,7 +805,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ item, onClose, trackPr
                         </button>
                       ))}
                     </div>
-                  </div>
+                  </div>}
                 </div>
               )}
             </div>
