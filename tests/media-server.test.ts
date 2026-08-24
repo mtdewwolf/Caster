@@ -354,6 +354,13 @@ describe('Media Server Tests', () => {
       expect(variant).toContain('#EXT-X-ENDLIST');
     });
 
+    it('should preserve cast access across HLS child requests', () => {
+      const master = transcoder.generateMasterPlaylist('item123', 1920, 1080, '?cast=signed-token');
+      const variant = transcoder.generateVariantPlaylist('item123', 12, '720p', '?cast=signed-token');
+      expect(master).toContain('/api/media/item123/hls/720p/index.m3u8?cast=signed-token');
+      expect(variant).toContain('/api/media/item123/hls/720p/segment-0.ts?cast=signed-token');
+    });
+
     it('should cap concurrent jobs and terminate every active transcode', async () => {
       const engine = transcoder as any;
       const originalTranscodeSegment = engine.transcodeSegment;

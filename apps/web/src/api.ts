@@ -45,6 +45,15 @@ export interface UserPermissions {
   hasProfilePin: boolean;
 }
 
+export interface CastPlaybackAccess {
+  directUrl: string;
+  hlsUrl: string;
+  hlsQualityUrls: Record<'1080p' | '720p' | '480p', string>;
+  subtitleUrlBase: string;
+  query: string;
+  expiresAt: string | null;
+}
+
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
@@ -295,6 +304,10 @@ export const api = {
 
   getPlaybackDescriptor(id: string): Promise<PlaybackDescriptor> {
     return request(`/media/${id}/playback`);
+  },
+
+  getCastPlaybackAccess(id: string): Promise<CastPlaybackAccess> {
+    return request(`/media/${id}/cast`);
   },
 
   async getMusicArtists(search?: string): Promise<ArtistSummary[]> {

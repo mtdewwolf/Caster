@@ -386,6 +386,17 @@ be disabled by account permissions.
 | `GET /api/media/:id/hls/:quality/:segment` | Exact `segment-N.ts` name | Generates or reads a cached MPEG-TS segment. Can return 429, 500, or 503. |
 | `GET /api/media/:id/thumbnail` | Media ID | Generated JPEG or plain-text 404. |
 | `GET /api/media/:id/subtitles/:index` | Non-negative stream index | WebVTT from an external SRT or embedded subtitle track. |
+| `GET /api/media/:id/cast` | Media ID | Short-lived, media-scoped playback URLs for Cast/AirPlay receivers. |
+
+The web player uses the browser's native remote-playback picker to discover
+compatible devices on the local network. In protected mode, the cast endpoint
+adds a signed grant to direct, HLS, and subtitle URLs because the receiver does
+not inherit the browser login cookie. Grants expire after 12 hours, authorize
+only one media item's playback derivatives, and continue to enforce the user's
+current account and media access rules. Set `CASTER_CAST_SECRET` to the same
+high-entropy value on every replica when Caster runs behind multiple servers.
+Read-only requests carrying a valid cast grant may use the receiver runtime's
+own HTTP origin; this exception does not apply to any other API resource.
 
 Accepted HLS qualities are `original`, `1080p`, `720p`, `480p`, and `360p`.
 The master playlist advertises transcoded resolutions, not `original`.

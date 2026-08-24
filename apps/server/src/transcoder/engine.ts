@@ -338,7 +338,12 @@ export class TranscodingEngine {
   /**
    * Generates HLS Master Playlist (.m3u8) for adaptive bitrate
    */
-  public generateMasterPlaylist(mediaId: string, itemWidth: number = 1920, itemHeight: number = 1080): string {
+  public generateMasterPlaylist(
+    mediaId: string,
+    itemWidth: number = 1920,
+    itemHeight: number = 1080,
+    querySuffix: string = ''
+  ): string {
     const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
 
     const profiles: TranscodeQuality[] = ['1080p', '720p', '480p', '360p'];
@@ -353,7 +358,7 @@ export class TranscodingEngine {
       const bandwidth = parseInt(p.maxBitrate, 10) * 1000 + parseInt(p.audioBitrate, 10) * 1000;
       lines.push(
         `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${p.width}x${p.height},NAME="${quality}"`,
-        `/api/media/${mediaId}/hls/${quality}/index.m3u8`
+        `/api/media/${mediaId}/hls/${quality}/index.m3u8${querySuffix}`
       );
     }
 
@@ -363,7 +368,12 @@ export class TranscodingEngine {
   /**
    * Generates HLS Variant Playlist (.m3u8) for a specific quality
    */
-  public generateVariantPlaylist(mediaId: string, duration: number, quality: TranscodeQuality): string {
+  public generateVariantPlaylist(
+    mediaId: string,
+    duration: number,
+    quality: TranscodeQuality,
+    querySuffix: string = ''
+  ): string {
     const totalSegments = Math.ceil(duration / HLS_SEGMENT_DURATION);
     const lines = [
       '#EXTM3U',
@@ -377,7 +387,7 @@ export class TranscodingEngine {
       const segDuration = i === totalSegments - 1 ? (duration % HLS_SEGMENT_DURATION || HLS_SEGMENT_DURATION) : HLS_SEGMENT_DURATION;
       lines.push(
         `#EXTINF:${segDuration.toFixed(3)},`,
-        `/api/media/${mediaId}/hls/${quality}/segment-${i}.ts`
+        `/api/media/${mediaId}/hls/${quality}/segment-${i}.ts${querySuffix}`
       );
     }
 
