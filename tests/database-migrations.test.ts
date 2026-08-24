@@ -121,7 +121,8 @@ describe('database migrations', () => {
           AND name IN (
             'libraries', 'media_items', 'external_subtitles',
             'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
-            'users', 'user_credentials', 'user_library_access', 'user_permissions'
+            'users', 'user_credentials', 'user_library_access', 'user_permissions',
+            'server_setup', 'account_invites'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -133,14 +134,18 @@ describe('database migrations', () => {
         { version: 4, name: 'persistent_auth_sessions' },
         { version: 5, name: 'multi_user_accounts' },
         { version: 6, name: 'user_library_permissions' },
-        { version: 7, name: 'media_content_ratings' }
+        { version: 7, name: 'media_content_ratings' },
+        { version: 8, name: 'account_provisioning' },
+        { version: 9, name: 'provisioning_owner_delete_action' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
+        'account_invites',
         'auth_sessions',
         'external_subtitles',
         'libraries',
         'media_items',
         'schema_migrations',
+        'server_setup',
         'settings',
         'user_credentials',
         'user_library_access',
@@ -212,7 +217,7 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 7 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 9 });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });

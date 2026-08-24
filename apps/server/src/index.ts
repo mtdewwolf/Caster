@@ -78,10 +78,10 @@ if (import.meta.main) {
     if (openModeIsExplicitlyEnabled()) {
       console.warn('SECURITY WARNING: CASTER_OPEN_MODE=true enables unauthenticated catalog and playback access.');
       console.warn(`Anonymous clients are limited to CASTER_OPEN_NETWORKS=${process.env.CASTER_OPEN_NETWORKS ?? '127.0.0.0/8,::1/128'}.`);
-      console.warn('Administrative routes remain locked until an admin credential is configured.');
+      console.warn('Administrative routes remain locked until the one-time owner setup is complete.');
     } else {
-      console.warn('SECURITY NOTICE: No admin credential is configured. Only direct loopback clients may browse or play media.');
-      console.warn('Set ADMIN_PASSWORD/ADMIN_TOKEN for protected access, or explicitly configure CASTER_OPEN_MODE and CASTER_OPEN_NETWORKS.');
+      console.warn('SECURITY NOTICE: This server has not been claimed. Complete owner setup in a browser from a local network.');
+      console.warn('Use CASTER_SETUP_NETWORKS only when the setup client is outside the built-in private-network ranges.');
     }
   }
 
