@@ -10,7 +10,8 @@ import {
   authRouter,
   requireAdminForMutations
 } from '../apps/server/src/auth';
-import { initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
+import { db, initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
+import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
 import server from '../apps/server/src/index';
@@ -39,6 +40,7 @@ describe('API integration regressions', () => {
     process.env.ADMIN_PASSWORD = 'integration-password';
     process.env.ADMIN_TOKEN = adminToken;
     initDatabase();
+    new SqliteUserStore(db).setCredential(ADMIN_USER_ID, 'api_token', adminToken);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-api-integration-'));
     mediaPath = path.join(fixtureRoot, 'Range.Test.2026.mp4');

@@ -18,8 +18,8 @@ import {
 
 describe('scanner and playback route failures', () => {
   const app = new Hono();
+  const adminId = `playback-scanner-admin-${crypto.randomUUID()}`;
   const adminToken = `playback-scanner-token-${crypto.randomUUID()}`;
-  const originalAdminToken = process.env.ADMIN_TOKEN;
   const originalGetHlsSegment = transcoder.getHlsSegment;
   const originalScanStatus = {
     ...scanStatus,
@@ -60,9 +60,10 @@ describe('scanner and playback route failures', () => {
   }
 
   beforeAll(() => {
-    process.env.ADMIN_TOKEN = adminToken;
     initDatabase();
-    new SqliteUserStore(db).setCredential('admin', 'api_token', adminToken);
+    const users = new SqliteUserStore(db);
+    users.create(adminId, adminId, 'admin');
+    users.setCredential(adminId, 'api_token', adminToken);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-playback-scanner-'));
     scanRoot = path.join(fixtureRoot, 'empty-library');
@@ -141,9 +142,7 @@ describe('scanner and playback route failures', () => {
   afterAll(() => {
     if (scanLibraryId) LibraryModel.delete(scanLibraryId);
     if (playbackLibraryId) LibraryModel.delete(playbackLibraryId);
-
-    if (originalAdminToken === undefined) delete process.env.ADMIN_TOKEN;
-    else process.env.ADMIN_TOKEN = originalAdminToken;
+    db.run('DELETE FROM users WHERE id = ?', [adminId]);
 
     const expectedPrefix = path.join(os.tmpdir(), 'caster-playback-scanner-');
     if (fixtureRoot.startsWith(expectedPrefix)) {
