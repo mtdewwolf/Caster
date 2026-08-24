@@ -5,7 +5,6 @@ import fs from 'fs';
 import path from 'path';
 import { initDatabase } from './db';
 import { apiRouter } from './routes/api';
-import { fsRouter } from './routes/fs';
 import { transcoder } from './transcoder/engine';
 import { authRouter, isAuthConfigured, requireAdminForMutations } from './auth';
 
@@ -30,15 +29,16 @@ app.route('/api/auth', authRouter);
 // Mount API router
 app.route('/api', apiRouter);
 
-// Filesystem browsing & media folder auto-detection
-app.route('/api/fs', fsRouter);
-
 // Health check endpoint
 app.get('/health', (c) => c.json({
   status: 'ok',
   service: 'Caster Media Server',
   time: new Date().toISOString()
 }));
+
+// Keep unknown API calls machine-readable instead of falling through to the
+// web app's SPA index page.
+app.all('/api/*', (c) => c.json({ error: 'API route not found' }, 404));
 
 // Serve static web app assets if built (for Docker / production deployment)
 const WEB_DIST = path.join(__dirname, '../../web/dist');
@@ -62,6 +62,7 @@ if (fs.existsSync(WEB_DIST)) {
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
+if (import.meta.main) {
 console.log(`\n======================================================`);
 console.log(`🚀 Caster Media Server starting on http://${HOST}:${PORT}`);
 console.log(`🌐 Tailscale & Local Network Ready`);
@@ -74,6 +75,7 @@ console.log(`======================================================\n`);
 
 if (!isAuthConfigured()) {
   console.warn('WARNING: Admin mutations are locked until ADMIN_PASSWORD or ADMIN_TOKEN is configured.');
+}
 }
 
 export default {

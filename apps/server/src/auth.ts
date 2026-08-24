@@ -9,6 +9,7 @@ const SESSION_TTL_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const PUBLIC_AUTH_MUTATIONS = new Set(['/api/auth/login', '/api/auth/logout']);
 
 export const ADMIN_USER_ID = 'admin';
 export const PUBLIC_USER_ID = 'public';
@@ -131,7 +132,7 @@ function recordLoginFailure(key: string): void {
 }
 
 export const requireAdminForMutations: MiddlewareHandler = async (c, next) => {
-  if (!MUTATION_METHODS.has(c.req.method) || c.req.path === '/api/auth/login') {
+  if (!MUTATION_METHODS.has(c.req.method) || PUBLIC_AUTH_MUTATIONS.has(c.req.path)) {
     await next();
     return;
   }

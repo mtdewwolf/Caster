@@ -6,6 +6,7 @@ import { convertSrtToVtt, findExternalSubtitles } from '../apps/server/src/scann
 import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanLibrary } from '../apps/server/src/scanner/indexer';
+import { transcoder } from '../apps/server/src/transcoder/engine';
 
 const SAMPLE_SRT = [
   '\uFEFF1',
@@ -128,6 +129,25 @@ describe('External subtitles (.srt sidecars)', () => {
         expect(response.status).toBe(404);
       } finally {
         fs.renameSync(`${target.path}.bak`, target.path);
+      }
+    });
+
+    it('reports embedded subtitle extraction failures instead of returning an empty success', async () => {
+      const engine = transcoder as any;
+      const originalExtractSubtitles = engine.extractSubtitlesVtt;
+      const originalConsoleError = console.error;
+      engine.extractSubtitlesVtt = async () => {
+        throw new Error('fixture extraction failure');
+      };
+      console.error = () => {};
+
+      try {
+        const response = await apiRouter.request(`/media/${itemId}/subtitles/0`);
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe('Subtitle extraction failed');
+      } finally {
+        engine.extractSubtitlesVtt = originalExtractSubtitles;
+        console.error = originalConsoleError;
       }
     });
   });
