@@ -147,11 +147,14 @@ function parseEncoders(output: string): Set<string> {
   return encoders;
 }
 
-function parseFilters(output: string): Set<string> {
+export function parseFfmpegFilters(output: string): Set<string> {
   const filters = new Set<string>();
 
   for (const line of output.split(/\r?\n/)) {
-    const match = line.match(/^\s*[T.][S.]\s+(\S+)/);
+    // FFmpeg 6 uses three capability flags (TSC), while newer builds can
+    // expose only two (TS). Accept both layouts instead of coupling the
+    // fixture matrix to the FFmpeg version installed by the host.
+    const match = line.match(/^\s*[TSC.]{2,}\s+(\S+)/);
     if (match) filters.add(match[1]);
   }
 
@@ -218,7 +221,7 @@ export function detectMediaToolCapabilities(): MediaToolCapabilities {
     encoders: parseEncoders(`${encodersResult.stdout}\n${encodersResult.stderr}`),
     muxers: parseFormats(`${muxersResult.stdout}\n${muxersResult.stderr}`, 'E'),
     demuxers: parseFormats(`${demuxersResult.stdout}\n${demuxersResult.stderr}`, 'D'),
-    filters: parseFilters(`${filtersResult.stdout}\n${filtersResult.stderr}`),
+    filters: parseFfmpegFilters(`${filtersResult.stdout}\n${filtersResult.stderr}`),
     diagnostics
   };
 }

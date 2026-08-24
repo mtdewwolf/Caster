@@ -7,6 +7,7 @@ import {
   createRuntimeMediaFixtures,
   detectMediaToolCapabilities,
   getMissingMediaFixtureCapabilities,
+  parseFfmpegFilters,
   probeMediaFile,
   probeVideoPacketTimes,
   removeRuntimeMediaFixtures,
@@ -14,6 +15,18 @@ import {
 } from './fixtures/media-fixtures';
 
 const capabilities = detectMediaToolCapabilities();
+
+describe('FFmpeg capability parsing', () => {
+  it('accepts both two-flag and three-flag filter listings', () => {
+    const filters = parseFfmpegFilters(`
+ .. color             |->V       Generate a solid color.
+... sine              |->A       Generate a sine wave.
+..C anullsrc          |->A       Generate silent audio.
+`);
+
+    expect(filters).toEqual(new Set(['color', 'sine', 'anullsrc']));
+  });
+});
 
 function tagValue(tags: Record<string, string> | undefined, name: string): string | undefined {
   const entry = Object.entries(tags || {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
