@@ -166,11 +166,15 @@ function isViewerMediaFileDeletion(method: string, pathname: string): boolean {
   return method === 'DELETE' && /^\/api\/media\/[^/]+\/file$/.test(pathname);
 }
 
+function isViewerOwnedMediaFeatureMutation(pathname: string): boolean {
+  return /^\/api\/(?:playlists|watch-rooms)(?:\/|$)/.test(pathname);
+}
+
 /**
  * Mutations default to admin-only. Viewer-owned progress and the separately
- * capability-gated source-file deletion are the only viewer mutation
- * namespaces. Sensitive read-only administration endpoints are also kept out
- * of viewer sessions.
+ * capability-gated source-file deletion, user-owned playlists, and ephemeral
+ * watch rooms are the only viewer mutation namespaces. Sensitive read-only
+ * administration endpoints are also kept out of viewer sessions.
  */
 export function requestRequiresAdmin(method: string, pathname: string): boolean {
   if (pathname.startsWith('/api/fs/') || pathname === '/api/fs') return true;
@@ -181,7 +185,9 @@ export function requestRequiresAdmin(method: string, pathname: string): boolean 
 
   if (!MUTATION_METHODS.has(method)) return false;
   if (isAuthRoute(pathname)) return false;
-  return !isViewerProgressMutation(pathname) && !isViewerMediaFileDeletion(method, pathname);
+  return !isViewerProgressMutation(pathname)
+    && !isViewerMediaFileDeletion(method, pathname)
+    && !isViewerOwnedMediaFeatureMutation(pathname);
 }
 
 function csrfSourceIsTrusted(context: Context): boolean {

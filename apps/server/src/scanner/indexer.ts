@@ -2,13 +2,18 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { extractMediaMetadata, parseFilename } from './metadata';
+import { normalizeMusicTags } from './music-tags';
+import { contentFingerprint } from './content-fingerprint';
 import { EXTERNAL_SUBTITLE_INDEX_BASE, findExternalSubtitles } from './subtitles';
 import { ensureMediaThumbnail } from './thumbnails';
-import { ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
+import { db, ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
+import { MediaIdentityStore } from '../db/media-identity-store';
+import { enqueueMediaMarkerAnalysis } from '../markers';
 import type { Library, MediaItem } from '../types';
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.aac', '.m4a', '.wav', '.ogg', '.opus', '.wma', '.alac']);
+const mediaIdentityStore = new MediaIdentityStore(db);
 
 export interface ScanStatus {
   isScanning: boolean;
@@ -56,6 +61,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
     }
 
     const files = findMediaFiles(library.path, library.type);
+    const currentLibraryPaths = new Set(files);
     scanStatus.totalFiles = files.length;
 
     const validFullPaths: string[] = [];
@@ -63,7 +69,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
     for (const filePath of files) {
       scanStatus.currentFile = path.basename(filePath);
       try {
-        await processMediaFile(library, filePath);
+        await processMediaFile(library, filePath, currentLibraryPaths);
         validFullPaths.push(filePath);
       } catch (err: any) {
         scanStatus.errors.push(`Error processing ${filePath}: ${err.message}`);
@@ -119,14 +125,35 @@ function findMediaFiles(dirPath: string, libraryType: string): string[] {
   return results;
 }
 
-async function processMediaFile(library: Library, filePath: string): Promise<void> {
+async function processMediaFile(
+  library: Library,
+  filePath: string,
+  currentLibraryPaths: ReadonlySet<string>
+): Promise<void> {
   const filename = path.basename(filePath);
   const relativePath = path.relative(library.path, filePath);
   const stats = fs.statSync(filePath);
 
-  const fileId = crypto.createHash('md5').update(filePath).digest('hex').substring(0, 16);
+  const fingerprint = contentFingerprint(filePath);
+  const identity = mediaIdentityStore.resolve({
+    libraryId: library.id,
+    fullPath: filePath,
+    relativePath,
+    originalFilename: filename,
+    contentFingerprint: fingerprint,
+    newId: `media_${crypto.randomUUID()}`,
+    currentLibraryPaths
+  });
+  const fileId = identity.id;
   const parsed = parseFilename(filename, library.type);
   const metadata = await extractMediaMetadata(filePath);
+  const musicTags = parsed.type === 'track'
+    ? normalizeMusicTags(metadata?.format_tags, {
+        filePath,
+        libraryPath: library.path,
+        fallbackTitle: parsed.title
+      })
+    : undefined;
 
   const streams = [...(metadata?.streams || [])];
   const externalTracks: Array<{ streamIndex: number; filePath: string; language?: string }> = [];
@@ -164,7 +191,7 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
   const mediaItem: Omit<MediaItem, 'progress' | 'library_name'> = {
     id: fileId,
     library_id: library.id,
-    title: parsed.title || filename,
+    title: musicTags?.title || parsed.title || filename,
     original_filename: filename,
     relative_path: relativePath,
     full_path: filePath,
@@ -172,7 +199,7 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
     series_title: parsed.seriesTitle,
     season_number: parsed.seasonNumber,
     episode_number: parsed.episodeNumber,
-    year: parsed.year,
+    year: musicTags?.year ?? parsed.year,
     duration: metadata?.duration || 0,
     size_bytes: stats.size,
     format: path.extname(filePath).replace('.', '').toLowerCase(),
@@ -187,7 +214,14 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
     audio_channels: metadata?.audio?.channels,
     audio_channel_layout: metadata?.audio?.channel_layout,
     audio_language: metadata?.audio?.language,
+    artist: musicTags?.artist,
+    album_artist: musicTags?.albumArtist,
+    album: musicTags?.album,
+    track_number: musicTags?.trackNumber,
+    disc_number: musicTags?.discNumber,
+    genre: musicTags?.genre,
     streams_json: JSON.stringify(streams),
+    content_fingerprint: fingerprint,
     poster_path: posterPath,
     content_rating: metadata?.content_rating,
     created_at: now,
@@ -196,4 +230,11 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
 
   MediaModel.upsert(mediaItem);
   ExternalSubtitleModel.replaceAllForMedia(fileId, externalTracks);
+  if (mediaItem.type === 'episode') {
+    enqueueMediaMarkerAnalysis({
+      mediaId: mediaItem.id,
+      fullPath: mediaItem.full_path,
+      duration: mediaItem.duration
+    });
+  }
 }

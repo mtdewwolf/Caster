@@ -34,6 +34,19 @@ export interface WatchProgress {
   last_watched_at: string;
 }
 
+export interface PlaybackMarker {
+  type: 'intro' | 'credits';
+  startSeconds: number;
+  endSeconds: number;
+  source: string;
+  confidence?: number | null;
+}
+
+export interface PlaybackDescriptor {
+  markers: PlaybackMarker[];
+  nextEpisode: MediaItem | null;
+}
+
 export interface MediaItem {
   id: string;
   library_id: string;
@@ -61,6 +74,12 @@ export interface MediaItem {
   audio_channels?: number;
   audio_channel_layout?: string;
   audio_language?: string;
+  artist?: string;
+  album_artist?: string;
+  album?: string;
+  track_number?: number;
+  disc_number?: number;
+  genre?: string;
   streams_json: string;
   poster_path?: string;
   created_at: string;
@@ -87,6 +106,29 @@ export interface SeriesSeason {
   episode_count: number;
   total_duration: number;
   watched_count: number;
+}
+
+export interface ArtistSummary {
+  id: string;
+  name: string;
+  library_id: string;
+  library_name?: string;
+  album_count: number;
+  track_count: number;
+  total_duration: number;
+  poster_path?: string;
+}
+
+export interface AlbumSummary {
+  id: string;
+  title: string;
+  album_artist: string;
+  library_id: string;
+  library_name?: string;
+  year?: number;
+  track_count: number;
+  total_duration: number;
+  poster_path?: string;
 }
 
 export interface Library {

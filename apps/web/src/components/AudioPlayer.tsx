@@ -1,20 +1,34 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronUp,
+  ListMusic,
   Music,
   Pause,
   Play,
   RotateCcw,
   RotateCw,
+  Repeat2,
+  Shuffle,
+  Trash2,
   Volume2,
   VolumeX
 } from 'lucide-react';
 import type { MediaItem } from '../types';
 import { api } from '../api';
+import type { MusicQueueRepeat, MusicQueueState } from '../features/music/queue-reducer';
 
 interface AudioPlayerProps {
   item: MediaItem;
   onClose: () => void;
+  queue: MusicQueueState;
+  onEnded: () => MediaItem | null;
+  onSelectQueueEntry: (entryId: string) => void;
+  onRemoveQueueEntry: (entryId: string) => void;
+  onMoveQueueEntry: (entryId: string, toIndex: number) => void;
+  onRepeatChange: (repeat: MusicQueueRepeat) => void;
+  onShuffleChange: () => void;
 }
 
 const formatTime = (seconds: number) => {
@@ -33,7 +47,17 @@ const formatTime = (seconds: number) => {
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 };
 
-export const AudioPlayer: React.FC<AudioPlayerProps> = ({ item, onClose }) => {
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({
+  item,
+  onClose,
+  queue,
+  onEnded,
+  onSelectQueueEntry,
+  onRemoveQueueEntry,
+  onMoveQueueEntry,
+  onRepeatChange,
+  onShuffleChange
+}) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -168,6 +192,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ item, onClose }) => {
     setPlaybackRate(nextRate);
   };
 
+  const handleEnded = () => {
+    setIsPlaying(false);
+    saveProgress();
+    const next = onEnded();
+    if (next?.id === item.id && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      void audioRef.current.play();
+    }
+  };
+
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const bufferedPercent = duration > 0 ? Math.min(100, (buffered / duration) * 100) : 0;
 
@@ -186,10 +220,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ item, onClose }) => {
           setPlaybackError(false);
         }}
         onPause={() => setIsPlaying(false)}
-        onEnded={() => {
-          setIsPlaying(false);
-          saveProgress();
-        }}
+        onEnded={handleEnded}
         onError={() => {
           setIsPlaying(false);
           setPlaybackError(true);
@@ -350,6 +381,53 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ item, onClose }) => {
                 </select>
               </label>
             </div>
+
+            <section aria-label="Music queue" className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="flex items-center gap-2 text-sm font-bold text-white">
+                  <ListMusic className="h-4 w-4 text-emerald-400" /> Up Next
+                </h2>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={onShuffleChange}
+                    className={`rounded-lg p-2 transition-colors ${queue.shuffle ? 'bg-emerald-400/15 text-emerald-300' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                    aria-label={queue.shuffle ? 'Disable shuffle' : 'Enable shuffle'}
+                    title={queue.shuffle ? 'Shuffle on' : 'Shuffle off'}
+                  >
+                    <Shuffle className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRepeatChange(queue.repeat === 'off' ? 'all' : queue.repeat === 'all' ? 'one' : 'off')}
+                    className={`relative rounded-lg p-2 transition-colors ${queue.repeat !== 'off' ? 'bg-emerald-400/15 text-emerald-300' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                    aria-label={`Repeat ${queue.repeat}`}
+                    title={`Repeat ${queue.repeat}`}
+                  >
+                    <Repeat2 className="h-4 w-4" />
+                    {queue.repeat === 'one' ? <span className="absolute inset-0 flex items-center justify-center pt-0.5 text-[8px] font-black">1</span> : null}
+                  </button>
+                </div>
+              </div>
+              <ol className="mt-3 max-h-48 space-y-1 overflow-y-auto pr-1">
+                {queue.entries.map((entry, index) => {
+                  const current = entry.id === queue.currentEntryId;
+                  return (
+                    <li key={entry.id} className={`group flex items-center gap-2 rounded-xl px-2 py-2 ${current ? 'bg-emerald-400/10' : 'hover:bg-white/5'}`}>
+                      <button type="button" onClick={() => onSelectQueueEntry(entry.id)} className="min-w-0 flex-1 text-left">
+                        <span className={`block truncate text-xs font-semibold ${current ? 'text-emerald-300' : 'text-slate-200'}`}>{entry.track.title}</span>
+                        <span className="block truncate text-[10px] text-slate-500">{entry.track.artist || entry.track.album_artist || 'Unknown Artist'}</span>
+                      </button>
+                      <div className="flex shrink-0 items-center opacity-60 transition-opacity group-hover:opacity-100">
+                        <button type="button" disabled={index === 0} onClick={() => onMoveQueueEntry(entry.id, index - 1)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-20" aria-label={`Move ${entry.track.title} earlier`}><ChevronUp className="h-3.5 w-3.5" /></button>
+                        <button type="button" disabled={index === queue.entries.length - 1} onClick={() => onMoveQueueEntry(entry.id, index + 1)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-20" aria-label={`Move ${entry.track.title} later`}><ChevronDown className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => onRemoveQueueEntry(entry.id)} className="rounded p-1 text-slate-400 hover:bg-rose-500/15 hover:text-rose-300" aria-label={`Remove ${entry.track.title} from queue`}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
           </section>
         </div>
       </main>

@@ -1,4 +1,4 @@
-import type { Library, MediaItem, Series, SeriesSeason, SystemHardwareStatus, ScanStatus, BrowseResult } from './types';
+import type { AlbumSummary, ArtistSummary, BrowseResult, Library, MediaItem, PlaybackDescriptor, ScanStatus, Series, SeriesSeason, SystemHardwareStatus } from './types';
 
 const API_BASE = '/api';
 export const AUTH_INVALIDATED_EVENT = 'caster:auth-invalidated';
@@ -247,6 +247,29 @@ export const api = {
   async getMediaItem(id: string): Promise<MediaItem> {
     const data = await request<{ item: MediaItem }>(`/media/${id}`);
     return data.item;
+  },
+
+  getPlaybackDescriptor(id: string): Promise<PlaybackDescriptor> {
+    return request(`/media/${id}/playback`);
+  },
+
+  async getMusicArtists(search?: string): Promise<ArtistSummary[]> {
+    const query = new URLSearchParams();
+    if (search) query.set('search', search);
+    const data = await request<{ items: ArtistSummary[] }>(`/music/artists?${query.toString()}`);
+    return data.items || [];
+  },
+
+  async getMusicAlbums(params: { artistId?: string; search?: string } = {}): Promise<AlbumSummary[]> {
+    const query = new URLSearchParams();
+    if (params.artistId) query.set('artistId', params.artistId);
+    if (params.search) query.set('search', params.search);
+    const data = await request<{ items: AlbumSummary[] }>(`/music/albums?${query.toString()}`);
+    return data.items || [];
+  },
+
+  getMusicAlbum(id: string): Promise<{ album: AlbumSummary; tracks: MediaItem[] }> {
+    return request(`/music/albums/${id}`);
   },
 
   async updateProgress(id: string, position: number, duration: number): Promise<void> {
