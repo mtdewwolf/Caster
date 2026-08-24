@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     environment:
       # Obtain an auth key from https://login.tailscale.com/admin/settings/keys
-      - TS_AUTHKEY=${TS_AUTHKEY:-tskey-auth-YOUR-KEY-HERE}
+      - TS_AUTHKEY=${TS_AUTHKEY:?Set TS_AUTHKEY before starting Tailscale}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=false
       - TS_EXTRA_ARGS=--accept-routes
@@ -37,6 +37,10 @@ services:
       - TRANSCODE_MAX_CONCURRENT=${TRANSCODE_MAX_CONCURRENT:-2}
       - TRANSCODE_CACHE_MAX_AGE_HOURS=${TRANSCODE_CACHE_MAX_AGE_HOURS:-24}
       - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
+      # Required: protects every POST/PUT/PATCH/DELETE API operation.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?}
+      # Optional for API clients: send this value as Authorization: Bearer <token>.
+      # - ADMIN_TOKEN=${ADMIN_TOKEN}
       - TZ=America/New_York
     volumes:
       - /mnt/tank/appdata/caster/data:/app/data

@@ -13,10 +13,14 @@
     "build": "bun run --filter '@caster/web' build",
     "start": "bun run --filter '@caster/server' start",
     "test": "bun test",
+    "test:e2e": "playwright test",
+    "test:e2e:serve": "bun tests/e2e/prepare-runtime.ts && bun run build && bun run --filter '@caster/server' start",
     "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/bun": "latest",
+    "hono": "^4.6.14",
     "typescript": "^5.7.2"
   }
 }

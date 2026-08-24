@@ -27,7 +27,9 @@ If you already have Tailscale running directly on your TrueNAS SCALE host:
    tailscale status
    ```
 2. Note your TrueNAS Tailscale IP (e.g. `100.x.y.z`) or MagicDNS name (e.g. `truenas-nas`).
-3. Deploy Caster using standard `docker/docker-compose.yml`.
+3. Deploy Caster through the supported TrueNAS Apps procedure in
+   [TRUENAS_SCALE_SETUP.md](TRUENAS_SCALE_SETUP.md). Tailscale remains a
+   separate host service; Caster itself still runs on the LAN.
 4. Any device connected to your Tailscale network can immediately stream by opening:
    ```text
    http://100.x.y.z:3001
@@ -39,13 +41,16 @@ If you already have Tailscale running directly on your TrueNAS SCALE host:
 
 ### Method B: Tailscale Container Sidecar (`docker-compose.tailscale.yml`)
 
-If you want an isolated Tailscale container dedicated to Caster:
+If you want an isolated Tailscale container dedicated to Caster on a
+standalone Docker host, use this method. Do not use shell-managed Compose as a
+second application manager on TrueNAS; use the TrueNAS Apps workflow above.
 
 1. Create a Tailscale Auth Key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys):
    - Check **Reusable** and **Ephemeral** (optional, recommended for containers).
-2. On TrueNAS SCALE, run:
+2. On the Docker host, set both secrets and run:
    ```bash
    export TS_AUTHKEY="tskey-auth-xxxxxx-xxxxxxxx"
+   export ADMIN_PASSWORD="replace-with-a-long-unique-password"
    docker compose -f docker-compose.tailscale.yml up -d
    ```
 3. The server will appear on your Tailscale admin console as `caster-nas`.

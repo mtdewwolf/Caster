@@ -88,7 +88,41 @@ describe('Admin authentication', () => {
     expect(tokenResponse.status).toBe(200);
   });
 
+  it('rejects malformed login bodies and rate-limits repeated failures', async () => {
+    const malformedResponse = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-malformed-test' },
+      body: '{'
+    });
+    expect(malformedResponse.status).toBe(400);
+    expect(await malformedResponse.json()).toEqual({ error: 'A password or token is required' });
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Real-IP': 'auth-rate-limit-test'
+    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.request('/api/auth/login', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ password: 'wrong-password' })
+      });
+      expect(response.status).toBe(401);
+    }
+
+    const limitedResponse = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ password })
+    });
+    expect(limitedResponse.status).toBe(429);
+    expect(Number(limitedResponse.headers.get('Retry-After'))).toBeGreaterThan(0);
+  });
+
   it('invalidates a browser session on logout', async () => {
+    const anonymousLogout = await app.request('/api/auth/logout', { method: 'POST' });
+    expect(anonymousLogout.status).toBe(200);
+
     const loginResponse = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-logout-test' },
