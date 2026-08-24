@@ -16,6 +16,20 @@ import { LoginModal } from './components/LoginModal';
 import { ProfileSwitchModal } from './components/ProfileSwitchModal';
 import { OwnerSetupModal } from './components/OwnerSetupModal';
 import { InviteSignupModal } from './components/InviteSignupModal';
+import { MusicLibraryPage } from './features/music/MusicLibraryPage';
+import {
+  createInitialMusicQueueState,
+  hydrateMusicQueueForUser,
+  musicQueueReducer,
+  persistMusicQueueState,
+  type MusicQueueAction
+} from './features/music/queue-reducer';
+import type { WatchRoomLaunch } from './features/watch-together/contracts';
+import { joinWatchRoom, leaveWatchRoom } from './features/watch-together/api';
+import {
+  clearWatchRoomInviteFromAddressBar,
+  readWatchRoomInvite
+} from './features/watch-together/invite-fragment';
 
 const MEDIA_PAGE_SIZE = 50;
 
@@ -31,6 +45,12 @@ export const App: React.FC = () => {
   const [selectedResolution, setSelectedResolution] = useState<string>('');
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [playingItem, setPlayingItem] = useState<MediaItem | null>(null);
+  const [watchRoom, setWatchRoom] = useState<WatchRoomLaunch | null>(null);
+  const [watchRoomJoinError, setWatchRoomJoinError] = useState<string | null>(null);
+  const handledWatchInviteRef = useRef<string | null>(null);
+  const [musicQueue, setMusicQueue] = useState(createInitialMusicQueueState);
+  const queueOwnerRef = useRef('anonymous');
+  const skipQueuePersistRef = useRef(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
@@ -58,6 +78,49 @@ export const App: React.FC = () => {
   const principalKey = authSession?.authenticated && authSession.user
     ? `${authSession.user.id}:${authSession.user.role}`
     : 'anonymous';
+  const queueUserId = authSession?.authenticated && authSession.user
+    ? authSession.user.id
+    : 'anonymous';
+
+  useEffect(() => {
+    queueOwnerRef.current = queueUserId;
+    skipQueuePersistRef.current = true;
+    setMusicQueue(hydrateMusicQueueForUser(window.localStorage, queueUserId) || createInitialMusicQueueState());
+    setPlayingItem(null);
+    setWatchRoom(null);
+    setWatchRoomJoinError(null);
+  }, [queueUserId]);
+
+  useEffect(() => {
+    if (queueOwnerRef.current !== queueUserId) return;
+    if (skipQueuePersistRef.current) {
+      skipQueuePersistRef.current = false;
+      return;
+    }
+    persistMusicQueueState(window.localStorage, queueUserId, musicQueue);
+  }, [musicQueue, queueUserId]);
+
+  const updateMusicQueue = useCallback((action: MusicQueueAction) => {
+    setMusicQueue((current) => musicQueueReducer(current, action));
+  }, []);
+
+  const playTracks = useCallback((tracks: MediaItem[]) => {
+    if (tracks.length === 0) return;
+    const entries = tracks.map((track, index) => ({
+      id: `${track.id}:${crypto.randomUUID?.() || `${Date.now()}-${index}`}`,
+      track
+    }));
+    setMusicQueue((current) => musicQueueReducer(current, { type: 'replace', entries }));
+    setPlayingItem(tracks[0]);
+  }, []);
+
+  const advanceMusicQueue = useCallback((): MediaItem | null => {
+    const next = musicQueueReducer(musicQueue, { type: 'advance' });
+    const nextTrack = next.entries.find((entry) => entry.id === next.currentEntryId)?.track ?? null;
+    setMusicQueue(next);
+    setPlayingItem(nextTrack);
+    return nextTrack;
+  }, [musicQueue]);
 
   const resetUserScopedState = useCallback(() => {
     mediaRequestId.current += 1;
@@ -68,6 +131,8 @@ export const App: React.FC = () => {
     setSelectedSeriesId(null);
     setSelectedItem(null);
     setPlayingItem(null);
+    setWatchRoom(null);
+    setWatchRoomJoinError(null);
     setHardware(null);
     setScanStatus(null);
     setShowSettings(false);
@@ -160,6 +225,30 @@ export const App: React.FC = () => {
   }, [checkAuthSession]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    const invitation = readWatchRoomInvite();
+    if (!invitation) return;
+    const invitationKey = `${invitation.roomId}:${invitation.inviteToken}`;
+    if (handledWatchInviteRef.current === invitationKey) return;
+    handledWatchInviteRef.current = invitationKey;
+    // Remove the secret before any subsequent navigation or resource request
+    // can retain it in browser history. It remains only in this closure.
+    clearWatchRoomInviteFromAddressBar();
+    setWatchRoomJoinError(null);
+    void joinWatchRoom(invitation.roomId, invitation.inviteToken)
+      .then(async (room) => {
+        const item = await api.getMediaItem(room.mediaId);
+        setSelectedItem(null);
+        setWatchRoom({ roomId: room.roomId });
+        setPlayingItem(item);
+      })
+      .catch((error) => {
+        handledWatchInviteRef.current = null;
+        setWatchRoomJoinError(error instanceof Error ? error.message : 'Unable to join watch room');
+      });
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     const handleAuthInvalidated = (event: Event) => {
       const message = event instanceof CustomEvent && typeof event.detail?.message === 'string'
         ? event.detail.message
@@ -192,6 +281,10 @@ export const App: React.FC = () => {
       setLoading(authSession === null);
       return;
     }
+    if (activeType === 'track') {
+      setLoading(false);
+      return;
+    }
     loadMedia();
   }, [activeType, debouncedSearchQuery, selectedResolution, authSession?.authenticated, authSession?.user?.id, authSession?.user?.role]);
 
@@ -222,6 +315,8 @@ export const App: React.FC = () => {
   }, [activeType, searchQuery, refreshToken, authSession?.authenticated, authSession?.user?.id]);
 
   const closePlayer = () => {
+    if (watchRoom) void leaveWatchRoom(watchRoom.roomId).catch(() => undefined);
+    setWatchRoom(null);
     setPlayingItem(null);
     setRefreshToken((t) => t + 1);
     loadMedia();
@@ -337,6 +432,13 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 pb-16">
+        {watchRoomJoinError && (
+          <div role="alert" className="fixed right-4 top-20 z-[70] max-w-sm rounded-xl border border-rose-400/30 bg-rose-950/95 p-4 text-sm text-rose-100 shadow-2xl">
+            <div className="font-semibold">Could not join Watch Together</div>
+            <div className="mt-1 text-xs text-rose-200">{watchRoomJoinError}</div>
+            <button type="button" onClick={() => setWatchRoomJoinError(null)} className="mt-2 text-xs font-semibold underline">Dismiss</button>
+          </div>
+        )}
         {authSessionError && authSession === null ? (
           <div role="alert" className="mx-auto mt-20 max-w-md rounded-2xl border border-rose-500/25 bg-rose-950/30 p-6 text-center">
             <h1 className="text-lg font-bold text-white">Unable to check your session</h1>
@@ -371,6 +473,8 @@ export const App: React.FC = () => {
               onRequireAuthentication={() => openLogin(false)}
             />
           </div>
+        ) : activeType === 'track' ? (
+          <MusicLibraryPage search={debouncedSearchQuery} onPlayTracks={playTracks} />
         ) : (
           <>
         {/* Hero Spotlight (shown if items exist and not actively searching) */}
@@ -590,14 +694,38 @@ export const App: React.FC = () => {
       {/* Media Player Modal */}
       {playingItem?.type === 'track' ? (
         <AudioPlayer
+          key={playingItem.id}
           item={playingItem}
           onClose={closePlayer}
+          queue={musicQueue}
+          onEnded={advanceMusicQueue}
+          onSelectQueueEntry={(entryId) => {
+            const track = musicQueue.entries.find((entry) => entry.id === entryId)?.track;
+            if (!track) return;
+            updateMusicQueue({ type: 'set-current', entryId });
+            setPlayingItem(track);
+          }}
+          onRemoveQueueEntry={(entryId) => {
+            const next = musicQueueReducer(musicQueue, { type: 'remove', entryId });
+            setMusicQueue(next);
+            if (musicQueue.currentEntryId === entryId) {
+              setPlayingItem(next.entries.find((entry) => entry.id === next.currentEntryId)?.track ?? null);
+            }
+          }}
+          onMoveQueueEntry={(entryId, toIndex) => updateMusicQueue({ type: 'reorder', entryId, toIndex })}
+          onRepeatChange={(repeat) => updateMusicQueue({ type: 'set-repeat', repeat })}
+          onShuffleChange={() => updateMusicQueue({ type: 'toggle-shuffle' })}
         />
       ) : playingItem ? (
         <VideoPlayer
+          key={playingItem.id}
           item={playingItem}
           onClose={closePlayer}
           trackProgress={isAuthenticated}
+          onAdvance={(nextItem) => setPlayingItem(nextItem)}
+          watchRoom={watchRoom}
+          onWatchRoomStarted={setWatchRoom}
+          onWatchRoomEnded={() => setWatchRoom(null)}
         />
       ) : null}
 

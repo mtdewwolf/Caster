@@ -115,6 +115,11 @@ describe('database migrations', () => {
       const progress = database.query(`
         SELECT user_id, media_id, position_seconds FROM watch_progress
       `).get();
+      const mediaColumns = database.query('PRAGMA table_info(media_items)').all() as Array<{ name: string }>;
+      const fingerprintIndex = database.query(`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_media_content_fingerprint'
+      `).get();
       const requiredTables = database.query(`
         SELECT name FROM sqlite_master
         WHERE type = 'table'
@@ -122,7 +127,8 @@ describe('database migrations', () => {
             'libraries', 'media_items', 'external_subtitles',
             'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
             'users', 'user_credentials', 'user_library_access', 'user_permissions',
-            'server_setup', 'account_invites'
+            'server_setup', 'account_invites', 'playlists', 'playlist_items',
+            'media_markers'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -135,8 +141,12 @@ describe('database migrations', () => {
         { version: 5, name: 'multi_user_accounts' },
         { version: 6, name: 'user_library_permissions' },
         { version: 7, name: 'media_content_ratings' },
-        { version: 8, name: 'account_provisioning' },
-        { version: 9, name: 'provisioning_owner_delete_action' }
+        { version: 8, name: 'music_track_metadata' },
+        { version: 9, name: 'user_playlists' },
+        { version: 10, name: 'media_markers' },
+        { version: 11, name: 'stable_media_fingerprints' },
+        { version: 12, name: 'account_provisioning' },
+        { version: 13, name: 'provisioning_owner_delete_action' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
@@ -144,6 +154,9 @@ describe('database migrations', () => {
         'external_subtitles',
         'libraries',
         'media_items',
+        'media_markers',
+        'playlist_items',
+        'playlists',
         'schema_migrations',
         'server_setup',
         'settings',
@@ -158,6 +171,8 @@ describe('database migrations', () => {
         media_id: 'media-1',
         position_seconds: 30
       });
+      expect(mediaColumns.map((column) => column.name)).toContain('content_fingerprint');
+      expect(fingerprintIndex).toEqual({ name: 'idx_media_content_fingerprint' });
       expect(database.query('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 });
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
@@ -217,7 +232,7 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 9 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 13 });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });

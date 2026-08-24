@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { serveStatic } from 'hono/bun';
+import { serveStatic, websocket } from 'hono/bun';
 import fs from 'fs';
 import path from 'path';
 import { initDatabase } from './db';
@@ -93,5 +93,6 @@ if (import.meta.main) {
 export default {
   port: PORT,
   hostname: HOST,
-  fetch: app.fetch
+  fetch: app.fetch,
+  websocket
 };
