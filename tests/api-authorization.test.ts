@@ -143,6 +143,33 @@ describe('API authorization boundaries', () => {
     expect(remote.status).toBe(404);
   });
 
+  it('lets a cast receiver play one granted item without inheriting the user session', async () => {
+    const response = await authorized(`/api/media/${mediaId}/cast`, adminToken);
+    expect(response.status).toBe(200);
+    const access = await response.json() as {
+      directUrl: string;
+      hlsUrl: string;
+      expiresAt: string;
+    };
+    expect(Date.parse(access.expiresAt)).toBeGreaterThan(Date.now());
+
+    const direct = await server.fetch(new Request(`http://localhost${access.directUrl}`, {
+      headers: { Origin: 'https://receiver.example' }
+    }));
+    expect(direct.status).toBe(200);
+    expect(direct.headers.get('Access-Control-Allow-Origin')).toBe('https://receiver.example');
+    expect(await direct.text()).toBe('private-media');
+
+    const master = await server.fetch(new Request(`http://localhost${access.hlsUrl}`));
+    expect(master.status).toBe(200);
+    const playlist = await master.text();
+    expect(playlist).toContain('?cast=');
+
+    const tokenQuery = new URL(`http://localhost${access.directUrl}`).search;
+    const catalog = await server.fetch(new Request(`http://localhost/api/media${tokenQuery}`));
+    expect(catalog.status).toBe(401);
+  });
+
   it('requires the explicit download capability for offline downloads', async () => {
     const access = new AccessControlStore(db);
     expect((await authorized(`/api/media/${mediaId}/download`, viewerToken)).status).toBe(404);

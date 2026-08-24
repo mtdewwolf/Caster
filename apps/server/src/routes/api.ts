@@ -33,6 +33,7 @@ import { createMusicRouter } from './music';
 import { createPlaybackRouter } from './playback';
 import { playlistRouter } from './playlists';
 import { createWatchTogetherRouter } from './watch-together';
+import { createCastAccessToken } from '../security/cast-access';
 
 export const apiRouter = new Hono();
 const accessControl = new AccessControlStore(db);
@@ -127,6 +128,12 @@ function libraryScopeFor(c: Context): string[] | undefined {
 function contentRatingScopeFor(c: Context) {
   const principal = accessPrincipal(c);
   return principal ? accessControl.getContentRatingScope(principal) : undefined;
+}
+
+function castQuerySuffix(c: Context): string {
+  const principal = resolvePrincipal(c);
+  const token = principal?.credential === 'cast' ? c.req.query('cast') : undefined;
+  return token ? `?cast=${encodeURIComponent(token)}` : '';
 }
 
 function libraryIsInScope(scope: readonly string[] | undefined, libraryId: string): boolean {
@@ -854,6 +861,34 @@ apiRouter.get('/media/:id/stream', async (c) => {
   }
 });
 
+// Browsers hand media URLs to Cast/AirPlay receivers, which do not share the
+// browser session. Issue a time-limited URL scoped to this user and media item.
+apiRouter.get('/media/:id/cast', (c) => {
+  const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id, 'stream')) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+
+  const principal = resolvePrincipal(c);
+  const grant = principal
+    ? createCastAccessToken(principal.id, id)
+    : null;
+  const suffix = grant ? `?cast=${encodeURIComponent(grant.token)}` : '';
+  const base = `/api/media/${encodeURIComponent(id)}`;
+  return c.json({
+    directUrl: `${base}/stream${suffix}`,
+    hlsUrl: `${base}/hls/master.m3u8${suffix}`,
+    hlsQualityUrls: {
+      '1080p': `${base}/hls/1080p/index.m3u8${suffix}`,
+      '720p': `${base}/hls/720p/index.m3u8${suffix}`,
+      '480p': `${base}/hls/480p/index.m3u8${suffix}`
+    },
+    subtitleUrlBase: `${base}/subtitles/`,
+    query: suffix,
+    expiresAt: grant?.expiresAt ?? null
+  });
+});
+
 // ---------------- HLS Dynamic Transcoding API ---------------- //
 
 apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
@@ -862,7 +897,12 @@ apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
   const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) return c.text('Not found', 404);
 
-  const playlist = transcoder.generateMasterPlaylist(id, item.width || 1920, item.height || 1080);
+  const playlist = transcoder.generateMasterPlaylist(
+    id,
+    item.width || 1920,
+    item.height || 1080,
+    castQuerySuffix(c)
+  );
   return new Response(playlist, {
     headers: {
       'Content-Type': 'application/vnd.apple.mpegurl',
@@ -883,7 +923,12 @@ apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
   const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) return c.text('Not found', 404);
 
-  const playlist = transcoder.generateVariantPlaylist(id, item.duration || 3600, quality);
+  const playlist = transcoder.generateVariantPlaylist(
+    id,
+    item.duration || 3600,
+    quality,
+    castQuerySuffix(c)
+  );
   return new Response(playlist, {
     headers: {
       'Content-Type': 'application/vnd.apple.mpegurl',

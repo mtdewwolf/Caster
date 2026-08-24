@@ -224,8 +224,12 @@ export function createApiRequestSecurity(
     const protectedMode = dependencies.isProtectedModeEnabled();
     const suppliedOrigin = context.req.header('origin');
     const origin = normalizedHeaderOrigin(suppliedOrigin);
+    const pathname = context.req.path;
+    const principal = dependencies.resolvePrincipal(context);
+    const castReceiverRequest = principal?.credential === 'cast' &&
+      ['GET', 'HEAD', 'OPTIONS'].includes(context.req.method);
 
-    if (suppliedOrigin && (!origin || !originIsTrusted(context, origin))) {
+    if (suppliedOrigin && (!origin || (!originIsTrusted(context, origin) && !castReceiverRequest))) {
       return context.json({ error: 'Origin is not trusted' }, 403);
     }
 
@@ -237,8 +241,6 @@ export function createApiRequestSecurity(
       return context.body(null, 204);
     }
 
-    const pathname = context.req.path;
-    const principal = dependencies.resolvePrincipal(context);
     const authRoute = isAuthRoute(pathname);
     const requiresAdmin = requestRequiresAdmin(context.req.method, pathname);
     const openAccessAllowed = dependencies.anonymousOpenAccessAllowed?.(context)
