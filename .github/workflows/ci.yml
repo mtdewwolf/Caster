@@ -5,18 +5,26 @@ on:
     branches: [Master]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     name: Typecheck, Test & Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.10
 
       - name: Install ffmpeg (required by transcoder/thumbnail tests)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -24,14 +32,110 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: bun audit --audit-level=high
+
       - name: Typecheck
         run: bun run typecheck
 
       - name: Test
         run: bun test
 
+      - name: Test in randomized order
+        run: bun test --randomize --seed=42
+
       - name: Build server
         run: bun run --filter '@caster/server' build
 
       - name: Build web
         run: bun run --filter '@caster/web' build
+
+  e2e:
+    name: Browser E2E
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run production-build browser tests
+        run: bun run test:e2e
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-artifacts
+          path: test-results/playwright/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+  container:
+    name: Container Build & Smoke Test
+    needs: [ci, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker build --file docker/Dockerfile --tag caster:ci .
+
+      - name: Scan production image
+        run: >-
+          docker run --rm
+          --volume /var/run/docker.sock:/var/run/docker.sock
+          --volume trivy-cache:/root/.cache
+          aquasec/trivy:0.73.0 image
+          --scanners vuln
+          --ignore-unfixed
+          --severity CRITICAL
+          --exit-code 1
+          --exit-on-eol 1
+          caster:ci
+
+      - name: Start production container
+        run: >-
+          docker run --detach
+          --name caster-ci
+          --env ADMIN_PASSWORD=ci-smoke-password-not-for-production
+          --publish 127.0.0.1:3001:3001
+          caster:ci
+
+      - name: Verify health, authentication, and web assets
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3001/health > /tmp/caster-health.json; then
+              grep --fixed-strings '"status":"ok"' /tmp/caster-health.json
+              curl --fail --silent http://127.0.0.1:3001/api/auth/session \
+                | grep --fixed-strings '"configured":true'
+              curl --fail --silent --output /dev/null http://127.0.0.1:3001/
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs caster-ci
+          exit 1
+
+      - name: Show container logs after failure
+        if: failure()
+        run: docker logs caster-ci || true
+
+      - name: Stop production container
+        if: always()
+        run: docker rm --force caster-ci || true

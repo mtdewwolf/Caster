@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -7,7 +7,12 @@ import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesM
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
 import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
-import { TranscodeCapacityError, TranscodeKilledError, transcoder } from '../transcoder/engine';
+import {
+  QUALITY_PROFILES,
+  TranscodeCapacityError,
+  TranscodeKilledError,
+  transcoder
+} from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 import { getCurrentUserId } from '../auth';
 
@@ -37,8 +42,12 @@ const SKIP_DIRECTORY_NAMES = new Set([
 const SUGGEST_SCAN_DEPTH = 3;
 const SUGGEST_MAX_DIRECTORIES = 800;
 const SUGGEST_MAX_RESULTS = 24;
+const MEDIA_PAGE_MAX_LIMIT = 500;
+const PROGRESS_PAGE_MAX_LIMIT = 1000;
 
 type LibraryType = 'movies' | 'tv' | 'music' | 'home_videos';
+
+const LIBRARY_TYPES = new Set<LibraryType>(['movies', 'tv', 'music', 'home_videos']);
 
 interface FilesystemEntry {
   name: string;
@@ -52,6 +61,76 @@ interface FolderSuggestion {
   type: LibraryType;
   mediaFileCount: number;
   alreadyAdded: boolean;
+}
+
+interface ByteRange {
+  start: number;
+  end: number;
+}
+
+async function readJsonObject(c: Context): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    return body as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseIntegerQuery(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number | null {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value)) return null;
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : null;
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTranscodeQuality(value: string): value is TranscodeQuality {
+  return Object.prototype.hasOwnProperty.call(QUALITY_PROFILES, value);
+}
+
+function parseByteRange(value: string, fileSize: number): ByteRange | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2]) || fileSize <= 0) return null;
+
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return {
+      start: Math.max(0, fileSize - suffixLength),
+      end: fileSize - 1
+    };
+  }
+
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : fileSize - 1;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(requestedEnd) ||
+    start < 0 ||
+    start >= fileSize ||
+    requestedEnd < start
+  ) {
+    return null;
+  }
+
+  return { start, end: Math.min(requestedEnd, fileSize - 1) };
 }
 
 function isMediaFile(fileName: string): boolean {
@@ -271,11 +350,26 @@ apiRouter.get('/libraries', (c) => {
 });
 
 apiRouter.post('/libraries', async (c) => {
-  const body = await c.req.json();
-  const { name, path: dirPath, type } = body;
+  const body = await readJsonObject(c);
+  if (!body) {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
 
-  if (!name || !dirPath || !type) {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const requestedPath = typeof body.path === 'string' ? body.path.trim() : '';
+  const requestedType = typeof body.type === 'string' ? body.type : '';
+
+  if (!name || !requestedPath || !requestedType) {
     return c.json({ error: 'Missing name, path, or type' }, 400);
+  }
+  if (!LIBRARY_TYPES.has(requestedType as LibraryType)) {
+    return c.json({ error: 'Invalid library type' }, 400);
+  }
+  const type = requestedType as LibraryType;
+
+  const dirPath = normalizeExistingDirectory(requestedPath);
+  if (!dirPath) {
+    return c.json({ error: 'Library path not found or not accessible' }, 400);
   }
 
   const id = `lib_${crypto.randomBytes(4).toString('hex')}`;
@@ -290,7 +384,7 @@ apiRouter.post('/libraries', async (c) => {
   });
 
   // Automatically start scan in background
-  scanLibrary(id).catch(console.error);
+  void scanLibrary(id).catch(console.error);
 
   return c.json({ library: lib });
 });
@@ -301,19 +395,26 @@ apiRouter.delete('/libraries/:id', (c) => {
   return c.json({ success: true });
 });
 
-apiRouter.post('/libraries/:id/scan', async (c) => {
+apiRouter.post('/libraries/:id/scan', (c) => {
   const id = c.req.param('id');
-  try {
-    // Run scan in background
-    scanLibrary(id).catch(console.error);
-    return c.json({ status: 'started', libraryId: id });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 400);
+  if (!LibraryModel.getById(id)) {
+    return c.json({ error: 'Library not found' }, 404);
   }
+  if (scanStatus.isScanning) {
+    return c.json({ error: 'A scan is already in progress' }, 409);
+  }
+
+  // Run scan in the background after validating all synchronous preconditions.
+  void scanLibrary(id).catch((error) => console.error(`Library scan ${id} failed:`, error));
+  return c.json({ status: 'started', libraryId: id });
 });
 
 apiRouter.post('/libraries/scan-all', (c) => {
-  scanAllLibraries().catch(console.error);
+  if (scanStatus.isScanning) {
+    return c.json({ error: 'A scan is already in progress' }, 409);
+  }
+
+  void scanAllLibraries().catch((error) => console.error('Library scan failed:', error));
   return c.json({ status: 'started' });
 });
 
@@ -330,8 +431,15 @@ apiRouter.get('/media', (c) => {
   const search = query.search;
   const resolution = query.resolution;
   const sort = query.sort;
-  const limit = query.limit ? parseInt(query.limit, 10) : 50;
-  const offset = query.offset ? parseInt(query.offset, 10) : 0;
+  const limit = parseIntegerQuery(query.limit, 50, 1, MEDIA_PAGE_MAX_LIMIT);
+  const offset = parseIntegerQuery(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+
+  if (limit === null || offset === null) {
+    return c.json(
+      { error: `limit must be between 1 and ${MEDIA_PAGE_MAX_LIMIT}; offset must be a non-negative integer` },
+      400
+    );
+  }
 
   const result = MediaModel.getAll(getCurrentUserId(c), {
     libraryId,
@@ -356,7 +464,15 @@ apiRouter.get('/media/continue-watching', (c) => {
 apiRouter.get('/media/progress', (c) => {
   const status = c.req.query('status');
   const requestedLimit = c.req.query('limit');
-  const limit = requestedLimit ? parseInt(requestedLimit, 10) : 200;
+  const limit = parseIntegerQuery(requestedLimit, 200, 1, PROGRESS_PAGE_MAX_LIMIT);
+
+  if (status && status !== 'in_progress' && status !== 'completed') {
+    return c.json({ error: 'status must be in_progress or completed' }, 400);
+  }
+  if (limit === null) {
+    return c.json({ error: `limit must be between 1 and ${PROGRESS_PAGE_MAX_LIMIT}` }, 400);
+  }
+
   const items = MediaModel.getProgressItems(getCurrentUserId(c), { status, limit });
   return c.json({ items });
 });
@@ -440,10 +556,19 @@ apiRouter.get('/media/:id/stream', async (c) => {
   const contentType = getMimeType(item.format);
 
   if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunksize = end - start + 1;
+    const parsedRange = parseByteRange(range, fileSize);
+    if (!parsedRange) {
+      return new Response('Requested range not satisfiable', {
+        status: 416,
+        headers: {
+          'Content-Range': `bytes */${fileSize}`,
+          'Accept-Ranges': 'bytes'
+        }
+      });
+    }
+
+    const { start, end } = parsedRange;
+    const chunkSize = end - start + 1;
 
     const fileStream = fs.createReadStream(item.full_path, { start, end });
     
@@ -464,7 +589,7 @@ apiRouter.get('/media/:id/stream', async (c) => {
       headers: {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize.toString(),
+        'Content-Length': chunkSize.toString(),
         'Content-Type': contentType
       }
     });
@@ -510,7 +635,12 @@ apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
 
 apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
   const id = c.req.param('id');
-  const quality = c.req.param('quality') as TranscodeQuality;
+  const requestedQuality = c.req.param('quality');
+  if (!isTranscodeQuality(requestedQuality)) {
+    return c.text('Invalid transcode quality', 400);
+  }
+
+  const quality = requestedQuality;
   const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item) return c.text('Not found', 404);
 
@@ -525,15 +655,23 @@ apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
 
 apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
   const id = c.req.param('id');
-  const quality = c.req.param('quality') as TranscodeQuality;
+  const requestedQuality = c.req.param('quality');
+  if (!isTranscodeQuality(requestedQuality)) {
+    return c.text('Invalid transcode quality', 400);
+  }
+
+  const quality = requestedQuality;
   const segmentFile = c.req.param('segment'); // e.g. "segment-0.ts"
 
-  const seqMatch = segmentFile.match(/segment-(\d+)\.ts/);
+  const seqMatch = segmentFile.match(/^segment-(\d+)\.ts$/);
   if (!seqMatch) {
     return c.text('Invalid segment name', 400);
   }
 
-  const seq = parseInt(seqMatch[1], 10);
+  const seq = Number(seqMatch[1]);
+  if (!Number.isSafeInteger(seq)) {
+    return c.text('Invalid segment name', 400);
+  }
   const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
@@ -603,7 +741,16 @@ apiRouter.post('/media/:id/thumbnail', async (c) => {
 
 apiRouter.get('/media/:id/subtitles/:index', async (c) => {
   const id = c.req.param('id');
-  const trackIndex = parseInt(c.req.param('index'), 10);
+  const requestedTrackIndex = c.req.param('index');
+  if (!/^\d+$/.test(requestedTrackIndex)) {
+    return c.text('Invalid subtitle track', 400);
+  }
+
+  const trackIndex = Number(requestedTrackIndex);
+  if (!Number.isSafeInteger(trackIndex)) {
+    return c.text('Invalid subtitle track', 400);
+  }
+
   const item = MediaModel.getById(id, getCurrentUserId(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
@@ -624,7 +771,7 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
       });
     } catch (err: any) {
       console.error(`Error reading external subtitle ${externalTrack.file_path}:`, err);
-      return c.text('WEBVTT\n\n', 200, { 'Content-Type': 'text/vtt' });
+      return c.text('Subtitle extraction failed', 500);
     }
   }
 
@@ -637,7 +784,8 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
       }
     });
   } catch (err: any) {
-    return c.text('WEBVTT\n\n', 200, { 'Content-Type': 'text/vtt' });
+    console.error(`Error extracting subtitle track ${trackIndex} from media ${id}:`, err);
+    return c.text('Subtitle extraction failed', 500);
   }
 });
 
@@ -645,11 +793,30 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
 
 apiRouter.post('/media/:id/progress', async (c) => {
   const id = c.req.param('id');
-  const body = await c.req.json();
-  const position = parseFloat(body.position || '0');
-  const duration = parseFloat(body.duration || '0');
+  const body = await readJsonObject(c);
+  if (!body) {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
 
-  const progress = ProgressModel.upsert(getCurrentUserId(c), id, position, duration);
+  const position = parseFiniteNumber(body.position);
+  const duration = parseFiniteNumber(body.duration);
+  if (position === null || duration === null || position < 0 || duration <= 0) {
+    return c.json(
+      { error: 'position must be non-negative and duration must be greater than zero' },
+      400
+    );
+  }
+
+  if (!MediaModel.getById(id, getCurrentUserId(c))) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+
+  const progress = ProgressModel.upsert(
+    getCurrentUserId(c),
+    id,
+    Math.min(position, duration),
+    duration
+  );
   return c.json({ progress });
 });
 
@@ -667,8 +834,16 @@ apiRouter.get('/system/status', (c) => {
   });
 });
 
+apiRouter.get('/system/transcodes', (c) => {
+  return c.json(transcoder.getTranscodeStatus());
+});
+
 apiRouter.post('/system/hardware/accel', async (c) => {
-  const body = await c.req.json();
+  const body = await readJsonObject(c);
+  if (!body) {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
   const accel = body.accel as HardwareAccelType;
   if (!['qsv', 'nvenc', 'vaapi', 'none'].includes(accel)) {
     return c.json({ error: 'Invalid acceleration type' }, 400);
@@ -698,11 +873,25 @@ apiRouter.post('/system/cache/clear', async (c) => {
   let maxAgeHours: number | undefined = undefined;
   let maxSizeBytes: number | undefined = undefined;
 
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    if (body.maxAgeHours !== undefined) maxAgeHours = Number(body.maxAgeHours);
-    if (body.maxSizeMb !== undefined) maxSizeBytes = Number(body.maxSizeMb) * 1024 * 1024;
-  } catch {}
+  const body = c.req.raw.body === null ? {} : await readJsonObject(c);
+  if (!body) {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  if (body.maxAgeHours !== undefined) {
+    const parsed = parseFiniteNumber(body.maxAgeHours);
+    if (parsed === null || parsed < 0) {
+      return c.json({ error: 'maxAgeHours must be a non-negative number' }, 400);
+    }
+    maxAgeHours = parsed;
+  }
+  if (body.maxSizeMb !== undefined) {
+    const parsed = parseFiniteNumber(body.maxSizeMb);
+    if (parsed === null || parsed < 0) {
+      return c.json({ error: 'maxSizeMb must be a non-negative number' }, 400);
+    }
+    maxSizeBytes = parsed * 1024 * 1024;
+  }
 
   const result = transcoder.cleanCache({ maxAgeHours, maxSizeBytes });
   return c.json({ success: true, result });

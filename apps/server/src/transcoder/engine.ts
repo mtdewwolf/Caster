@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -82,6 +82,31 @@ interface ActiveTranscodeJob extends ActiveTranscodeSession {
   killed: boolean;
 }
 
+interface ExecFileOptions {
+  encoding: 'utf8';
+  timeout?: number;
+}
+
+export interface TranscodingEngineDependencies {
+  execFileSync(command: string, args: string[], options: ExecFileOptions): string;
+  spawn(command: string, args: string[]): ChildProcessWithoutNullStreams;
+  existsSync(filePath: string): boolean;
+  readdirSync(directoryPath: string): string[];
+  platform: NodeJS.Platform;
+  scheduleMaintenance: boolean;
+  warn(...args: unknown[]): void;
+}
+
+const DEFAULT_ENGINE_DEPENDENCIES: TranscodingEngineDependencies = {
+  execFileSync: (command, args, options) => String(execFileSync(command, args, options)),
+  spawn: (command, args) => spawn(command, args),
+  existsSync: (filePath) => fs.existsSync(filePath),
+  readdirSync: (directoryPath) => fs.readdirSync(directoryPath, { encoding: 'utf8' }),
+  platform: process.platform,
+  scheduleMaintenance: true,
+  warn: (...args) => console.warn(...args)
+};
+
 export class TranscodeCapacityError extends Error {
   constructor(public readonly limit: number) {
     super(`Transcode concurrency limit reached (${limit})`);
@@ -96,15 +121,22 @@ export class TranscodeKilledError extends Error {
   }
 }
 
-class TranscodingEngine {
+export class TranscodingEngine {
   private readonly activeJobs = new Map<string, ActiveTranscodeJob>();
   private readonly inFlightSegments = new Map<string, Promise<Buffer>>();
   private readonly cacheWrites = new Set<string>();
+  private readonly dependencies: TranscodingEngineDependencies;
   private hardwareStatus: SystemHardwareStatus | null = null;
+  private qsvDevicePath: string | undefined;
+  private vaapiDevicePath: string | undefined;
+  private nvidiaDevicePath: string | undefined;
   private cleanupTimer: any = null;
 
-  constructor() {
+  constructor(dependencies: Partial<TranscodingEngineDependencies> = {}) {
+    this.dependencies = { ...DEFAULT_ENGINE_DEPENDENCIES, ...dependencies };
     this.detectHardware();
+
+    if (!this.dependencies.scheduleMaintenance) return;
 
     // Run initial startup cleanup asynchronously after brief delay
     setTimeout(() => {
@@ -134,38 +166,63 @@ class TranscodingEngine {
     let nvencSupported = false;
     let vaapiSupported = false;
     let accelType: HardwareAccelType = 'none';
+    const renderDevices = this.findRenderDevices();
+    const nvidiaDevice = this.findNvidiaDevice();
+    this.qsvDevicePath = undefined;
+    this.vaapiDevicePath = undefined;
+    this.nvidiaDevicePath = nvidiaDevice;
 
     try {
-      const versionOut = execSync('ffmpeg -version', { encoding: 'utf8' });
+      const versionOut = this.dependencies.execFileSync('ffmpeg', ['-version'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
       ffmpegVersion = versionOut.split('\n')[0] || 'Available';
 
-      const encodersOut = execSync('ffmpeg -encoders', { encoding: 'utf8' });
-      qsvSupported = encodersOut.includes('h264_qsv');
-      nvencSupported = encodersOut.includes('h264_nvenc');
-      vaapiSupported = encodersOut.includes('h264_vaapi');
+      const encodersOut = this.dependencies.execFileSync('ffmpeg', ['-hide_banner', '-encoders'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      const isLinux = this.dependencies.platform === 'linux';
+      const isWindows = this.dependencies.platform === 'win32';
 
-      // Check device availability
-      const hasDri = fs.existsSync('/dev/dri/renderD128');
-      
-      if (nvencSupported) {
-        // Test nvidia if available
-        accelType = 'nvenc';
-      } else if (hasDri && qsvSupported) {
-        accelType = 'qsv';
-      } else if (hasDri && vaapiSupported) {
-        accelType = 'vaapi';
-      } else if (qsvSupported) {
-        accelType = 'qsv';
-      } else {
-        accelType = 'none';
+      // FFmpeg distributions commonly list hardware encoders even when the
+      // host has no matching GPU, driver, device mapping, or permissions. A
+      // short functional encode probe makes the status describe what this
+      // process can actually use instead of what FFmpeg was compiled with.
+      nvencSupported =
+        encodersOut.includes('h264_nvenc') &&
+        (isWindows || (isLinux && Boolean(nvidiaDevice))) &&
+        this.probeHardwareEncoder('nvenc', nvidiaDevice);
+
+      if (encodersOut.includes('h264_qsv')) {
+        if (isWindows) {
+          qsvSupported = this.probeHardwareEncoder('qsv');
+        } else if (isLinux) {
+          this.qsvDevicePath = renderDevices.find((devicePath) =>
+            this.probeHardwareEncoder('qsv', devicePath)
+          );
+          qsvSupported = Boolean(this.qsvDevicePath);
+        }
       }
+
+      if (encodersOut.includes('h264_vaapi') && isLinux) {
+        this.vaapiDevicePath = renderDevices.find((devicePath) =>
+          this.probeHardwareEncoder('vaapi', devicePath)
+        );
+        vaapiSupported = Boolean(this.vaapiDevicePath);
+      }
+
+      if (nvencSupported) accelType = 'nvenc';
+      else if (qsvSupported) accelType = 'qsv';
+      else if (vaapiSupported) accelType = 'vaapi';
     } catch (e) {
-      console.warn('FFmpeg hardware detection warning:', e);
+      this.dependencies.warn('FFmpeg hardware detection warning:', e);
     }
 
     this.hardwareStatus = {
       accelType,
-      devicePath: fs.existsSync('/dev/dri/renderD128') ? '/dev/dri/renderD128' : undefined,
+      devicePath: this.devicePathForAccel(accelType),
       ffmpegVersion,
       qsvSupported,
       nvencSupported,
@@ -175,6 +232,67 @@ class TranscodingEngine {
     };
 
     return this.hardwareStatus;
+  }
+
+  private findRenderDevices(): string[] {
+    if (this.dependencies.platform !== 'linux') return [];
+
+    try {
+      return this.dependencies
+        .readdirSync('/dev/dri')
+        .filter((name) => /^renderD\d+$/.test(name))
+        .sort((left, right) => left.localeCompare(right, 'en', { numeric: true }))
+        .map((deviceName) => path.posix.join('/dev/dri', deviceName));
+    } catch {
+      return [];
+    }
+  }
+
+  private findNvidiaDevice(): string | undefined {
+    if (this.dependencies.platform !== 'linux') return undefined;
+
+    const devicePaths = ['/dev/nvidia0', '/dev/nvidiactl'];
+    return devicePaths.find((devicePath) => this.dependencies.existsSync(devicePath));
+  }
+
+  private devicePathForAccel(accel: HardwareAccelType): string | undefined {
+    if (accel === 'nvenc') return this.nvidiaDevicePath;
+    if (accel === 'qsv') return this.qsvDevicePath;
+    if (accel === 'vaapi') return this.vaapiDevicePath;
+    return undefined;
+  }
+
+  private probeHardwareEncoder(accel: Exclude<HardwareAccelType, 'none'>, devicePath?: string): boolean {
+    const args = ['-hide_banner', '-loglevel', 'error'];
+
+    if (accel === 'qsv' && devicePath) {
+      args.push('-qsv_device', devicePath);
+    } else if (accel === 'vaapi' && devicePath) {
+      args.push('-vaapi_device', devicePath);
+    }
+
+    args.push(
+      '-f', 'lavfi',
+      '-i', 'color=c=black:s=64x64:r=1',
+      '-frames:v', '1',
+      '-an'
+    );
+
+    if (accel === 'vaapi') {
+      args.push('-vf', 'format=nv12,hwupload');
+    }
+
+    args.push('-c:v', `h264_${accel}`, '-f', 'null', '-');
+
+    try {
+      this.dependencies.execFileSync('ffmpeg', args, {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public getHardwareStatus(): SystemHardwareStatus {
@@ -213,6 +331,7 @@ class TranscodingEngine {
   public setPreferredAccel(type: HardwareAccelType) {
     if (this.hardwareStatus) {
       this.hardwareStatus.accelType = type;
+      this.hardwareStatus.devicePath = this.devicePathForAccel(this.hardwareStatus.accelType);
     }
   }
 
@@ -500,6 +619,7 @@ class TranscodingEngine {
       }
 
       const args: string[] = ['-hide_banner', '-loglevel', 'error'];
+      const hardwareDevicePath = this.devicePathForAccel(accel);
 
       // Seek before input for super fast keyframe seeking
       args.push('-ss', startTime.toString());
@@ -507,10 +627,13 @@ class TranscodingEngine {
       // Hardware acceleration input flags
       if (accel === 'nvenc') {
         args.push('-hwaccel', 'cuda');
-      } else if (accel === 'vaapi' && fs.existsSync('/dev/dri/renderD128')) {
-        args.push('-hwaccel', 'vaapi', '-vaapi_device', '/dev/dri/renderD128');
+      } else if (accel === 'vaapi' && hardwareDevicePath) {
+        args.push('-hwaccel', 'vaapi', '-vaapi_device', hardwareDevicePath);
       } else if (accel === 'qsv') {
         args.push('-hwaccel', 'qsv');
+        if (hardwareDevicePath) {
+          args.push('-qsv_device', hardwareDevicePath);
+        }
       }
 
       args.push('-i', filePath, '-t', duration.toString());
@@ -564,7 +687,7 @@ class TranscodingEngine {
         'pipe:1'
       );
 
-      const ffmpeg = spawn('ffmpeg', args);
+      const ffmpeg = this.dependencies.spawn('ffmpeg', args);
       job.process = ffmpeg;
       const chunks: Buffer[] = [];
       let errLog = '';
@@ -586,6 +709,7 @@ class TranscodingEngine {
       });
 
       ffmpeg.on('close', (code) => {
+        if (settled) return;
         if (job.killed) {
           finish(() => reject(new TranscodeKilledError()));
           return;
@@ -595,7 +719,14 @@ class TranscodingEngine {
         } else {
           // If hardware failed, try CPU fallback
           if (accel !== 'none') {
-            console.warn(`Hardware accel (${accel}) segment failed, falling back to CPU. Error:`, errLog);
+            // Avoid paying the same known-bad hardware startup penalty for
+            // every later segment. Capability remains visible so an operator
+            // can explicitly retry it after fixing a transient device issue.
+            if (this.hardwareStatus?.accelType === accel) {
+              this.hardwareStatus.accelType = 'none';
+              this.hardwareStatus.devicePath = undefined;
+            }
+            this.dependencies.warn(`Hardware accel (${accel}) segment failed, falling back to CPU. Error:`, errLog);
             finish(() => {
               this.transcodeSegment(filePath, startTime, duration, profile, 'none', job)
                 .then(resolve)
@@ -608,6 +739,7 @@ class TranscodingEngine {
       });
 
       ffmpeg.on('error', (err) => {
+        if (settled) return;
         finish(() => reject(job.killed ? new TranscodeKilledError() : err));
       });
     });

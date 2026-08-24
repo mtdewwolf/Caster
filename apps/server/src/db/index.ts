@@ -3,7 +3,10 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import type { Library, MediaItem, Series, SeriesSeason, WatchProgress } from '../types';
-import { ADMIN_USER_ID } from '../auth';
+import {
+  migrateLegacyWatchProgressToUsers,
+  runDatabaseMigrations
+} from './migrations';
 
 // Ensure data directory exists
 const DATA_DIR = process.env.MEDIA_DATA_DIR || path.join(process.cwd(), 'data');
@@ -20,84 +23,20 @@ db.run('PRAGMA journal_mode = WAL;');
 db.run('PRAGMA synchronous = NORMAL;');
 db.run('PRAGMA foreign_keys = ON;');
 
-// Initialize schema
-export function initDatabase() {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS libraries (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      type TEXT NOT NULL,
-      last_scanned_at TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS media_items (
-      id TEXT PRIMARY KEY,
-      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      original_filename TEXT NOT NULL,
-      relative_path TEXT NOT NULL,
-      full_path TEXT NOT NULL UNIQUE,
-      type TEXT NOT NULL,
-      series_title TEXT,
-      season_number INTEGER,
-      episode_number INTEGER,
-      year INTEGER,
-      duration REAL DEFAULT 0,
-      size_bytes INTEGER DEFAULT 0,
-      format TEXT,
-      video_codec TEXT,
-      width INTEGER,
-      height INTEGER,
-      resolution_label TEXT,
-      frame_rate REAL,
-      bit_rate INTEGER,
-      is_hdr INTEGER DEFAULT 0,
-      audio_codec TEXT,
-      audio_channels INTEGER,
-      audio_channel_layout TEXT,
-      audio_language TEXT,
-      streams_json TEXT,
-      poster_path TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS external_subtitles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-      stream_index INTEGER NOT NULL,
-      file_path TEXT NOT NULL,
-      language TEXT,
-      UNIQUE(media_id, stream_index)
-    );
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_external_subtitles_media ON external_subtitles(media_id);
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_media_library ON media_items(library_id);
-    CREATE INDEX IF NOT EXISTS idx_media_type ON media_items(type);
-    CREATE INDEX IF NOT EXISTS idx_media_title ON media_items(title);
-    CREATE INDEX IF NOT EXISTS idx_media_series ON media_items(series_title, season_number, episode_number);
-  `);
+// Initialize and upgrade the schema before models begin serving queries.
+export function initDatabase(database: Database = db) {
+  database.run('PRAGMA foreign_keys = ON;');
+  runDatabaseMigrations(database);
 
   // FTS5 is bundled with Bun's SQLite build, but keep LIKE search as a fallback
   // for environments that provide SQLite without the extension.
   try {
-    const ftsAlreadyExists = !!db.query(`
+    const ftsAlreadyExists = !!database.query(`
       SELECT 1 FROM sqlite_master
       WHERE type = 'table' AND name = 'media_items_fts'
     `).get();
 
-    db.run(`
+    database.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS media_items_fts USING fts5(
         title,
         series_title,
@@ -125,79 +64,16 @@ export function initDatabase() {
     `);
 
     if (!ftsAlreadyExists) {
-      db.run(`INSERT INTO media_items_fts(media_items_fts) VALUES ('rebuild')`);
+      database.run(`INSERT INTO media_items_fts(media_items_fts) VALUES ('rebuild')`);
     }
-    mediaFtsEnabled = true;
+    if (database === db) mediaFtsEnabled = true;
   } catch (error) {
-    mediaFtsEnabled = false;
+    if (database === db) mediaFtsEnabled = false;
     console.warn('SQLite FTS5 unavailable; falling back to LIKE search.', error);
   }
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS watch_progress (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-      position_seconds REAL NOT NULL DEFAULT 0,
-      duration_seconds REAL NOT NULL DEFAULT 0,
-      progress_percent REAL NOT NULL DEFAULT 0,
-      completed INTEGER NOT NULL DEFAULT 0,
-      last_watched_at TEXT NOT NULL,
-      UNIQUE(user_id, media_id)
-    );
-  `);
-
-  migrateWatchProgressToUsers(db);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_progress_user_last_watched
-      ON watch_progress(user_id, last_watched_at DESC);
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-  `);
 }
 
-export function migrateWatchProgressToUsers(database: Database): void {
-  const columns = database.query('PRAGMA table_info(watch_progress)').all() as Array<{ name: string }>;
-  if (columns.some((column) => column.name === 'user_id')) return;
-
-  database.run('BEGIN IMMEDIATE');
-  try {
-    database.run(`
-      CREATE TABLE watch_progress_with_users (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-        position_seconds REAL NOT NULL DEFAULT 0,
-        duration_seconds REAL NOT NULL DEFAULT 0,
-        progress_percent REAL NOT NULL DEFAULT 0,
-        completed INTEGER NOT NULL DEFAULT 0,
-        last_watched_at TEXT NOT NULL,
-        UNIQUE(user_id, media_id)
-      );
-    `);
-    database.run(`
-      INSERT INTO watch_progress_with_users (
-        id, user_id, media_id, position_seconds, duration_seconds,
-        progress_percent, completed, last_watched_at
-      )
-      SELECT id, ?, media_id, position_seconds, duration_seconds,
-             progress_percent, completed, last_watched_at
-      FROM watch_progress
-    `, [ADMIN_USER_ID]);
-    database.run('DROP TABLE watch_progress');
-    database.run('ALTER TABLE watch_progress_with_users RENAME TO watch_progress');
-    database.run('COMMIT');
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
-  }
-}
+export const migrateWatchProgressToUsers = migrateLegacyWatchProgressToUsers;
 
 // ---------------- Helper Queries ---------------- //
 
