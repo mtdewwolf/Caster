@@ -48,10 +48,19 @@ See the detailed setup guides in `docs/`:
 
 - [TrueNAS SCALE Deployment Guide](docs/TRUENAS_SCALE_SETUP.md)
 - [Tailscale Remote Streaming Guide](docs/TAILSCALE_SETUP.md)
+- [SQLite Backup and Restore Guide](docs/BACKUP_RESTORE.md)
+- [Merge and Release Gates](docs/RELEASE_GATES.md)
+- [HTTP API and Diagnostics Reference](docs/API.md)
 
 ### Deploy with Docker Compose
 
 ```bash
 cd docker
+export ADMIN_PASSWORD="replace-with-a-long-unique-password"
 docker compose up -d
 ```
+
+In PowerShell, set the same value with
+`$env:ADMIN_PASSWORD = "replace-with-a-long-unique-password"` before running
+Compose. The deployment intentionally refuses to start without admin
+credentials.
