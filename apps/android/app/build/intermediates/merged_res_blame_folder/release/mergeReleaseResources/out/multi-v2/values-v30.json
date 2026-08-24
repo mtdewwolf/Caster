@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "dev.caster.android.app-mergeReleaseResources-50:/values-v30/values-v30.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\user\\.gradle\\caches\\8.13\\transforms\\fbcba3cded65ed4826a3194619bf69b9\\transformed\\material3\\res\\values-v30\\values-v30.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "72",
+                        "endOffsets": "123"
+                    }
+                }
+            ]
+        }
+    ]
+}
