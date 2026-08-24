@@ -174,9 +174,11 @@ test('opens direct playback and restores persisted resume progress', async ({ pa
   const detailPlayButton = page.getByRole('button').filter({ hasText: /^Play Now$/ });
   await expect(detailPlayButton).toBeVisible();
 
-  const streamResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/media/${MOONRISE_MEDIA_ID}/stream`)
-  );
+  const streamResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/media/${MOONRISE_MEDIA_ID}/stream` &&
+      url.searchParams.has('cast');
+  });
   await detailPlayButton.click();
   expect([200, 206]).toContain((await streamResponse).status());
   await expect(page.getByTitle('Back to library')).toBeVisible();
