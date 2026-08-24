@@ -40,7 +40,8 @@ export interface MediaItem {
   title: string;
   original_filename: string;
   relative_path: string;
-  full_path: string;
+  /** Only administrators receive the server's absolute filesystem path. */
+  full_path?: string;
   type: MediaType;
   series_title?: string;
   season_number?: number;

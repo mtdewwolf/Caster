@@ -26,7 +26,22 @@ bun run dev:web
 ```
 
 On PowerShell, set the password with `$env:ADMIN_PASSWORD = 'replace-with-a-long-password'`.
-Browsing and streaming remain available without signing in; all API mutations require an admin session. API clients may instead set `ADMIN_TOKEN` and send it as a Bearer token.
+When a credential is configured, browsing and streaming require an account;
+filesystem, library, scan, and system administration require an admin. API
+clients may set `ADMIN_TOKEN` and send it as a Bearer token. Cross-origin web
+clients must also list their exact origin in `CASTER_TRUSTED_ORIGINS`.
+
+With no account credential, only a client connected directly from loopback can
+browse or play media. To deliberately run account-free on a private network,
+set both `CASTER_OPEN_MODE=true` and an exact IP/CIDR allowlist such as
+`CASTER_OPEN_NETWORKS=192.168.0.0/16,100.64.0.0/10`. This exposes the catalog
+and playback content to every allowed client; administrative routes remain
+locked. Caster prints a prominent startup warning while this mode is active.
+
+Reverse-proxy forwarding headers are ignored unless the immediate proxy is in
+`CASTER_TRUSTED_PROXIES` (exact IP or IPv4/IPv6 CIDR). For example, use
+`CASTER_TRUSTED_PROXIES=172.20.0.0/16` for a dedicated container proxy network.
+Do not add client networks or broad catch-all CIDRs to the trusted-proxy list.
 
 ### 3. Run Tests
 

@@ -22,8 +22,8 @@ interface ProgressPageProps {
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
   refreshToken: number;
-  isAdmin: boolean;
-  onRequireAdmin: () => void;
+  isAuthenticated: boolean;
+  onRequireAuthentication: () => void;
 }
 
 const formatDuration = (secs: number) => {
@@ -54,19 +54,23 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
   onPlay,
   onSelect,
   refreshToken,
-  isAdmin,
-  onRequireAdmin
+  isAuthenticated,
+  onRequireAuthentication
 }) => {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   const loadProgress = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await api.getProgress();
       setItems(res || []);
     } catch (err) {
+      setItems([]);
+      setError(err instanceof Error ? err.message : 'Unable to load watch progress');
       console.error('Error fetching progress:', err);
     } finally {
       setLoading(false);
@@ -94,8 +98,8 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
   );
 
   const handleMarkWatched = async (id: string) => {
-    if (!isAdmin) {
-      onRequireAdmin();
+    if (!isAuthenticated) {
+      onRequireAuthentication();
       return;
     }
     await api.markWatched(id);
@@ -103,8 +107,8 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
   };
 
   const handleMarkUnwatched = async (id: string) => {
-    if (!isAdmin) {
-      onRequireAdmin();
+    if (!isAuthenticated) {
+      onRequireAuthentication();
       return;
     }
     await api.markUnwatched(id);
@@ -112,8 +116,8 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
   };
 
   const handleRemove = async (id: string) => {
-    if (!isAdmin) {
-      onRequireAdmin();
+    if (!isAuthenticated) {
+      onRequireAuthentication();
       return;
     }
     await api.removeProgress(id);
@@ -212,7 +216,14 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
       </div>
 
       {/* Progress List */}
-      {loading ? (
+      {error ? (
+        <div role="alert" className="mx-auto max-w-lg rounded-xl border border-rose-500/25 bg-rose-950/30 p-5 text-center text-sm text-rose-200">
+          <p>{error}</p>
+          <button type="button" onClick={() => void loadProgress()} className="mt-3 rounded-lg border border-rose-400/30 px-3 py-1.5 text-xs font-semibold hover:bg-rose-900/40">
+            Try again
+          </button>
+        </div>
+      ) : loading ? (
         <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-500">
           <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
           <span className="text-xs">Loading watch progress...</span>

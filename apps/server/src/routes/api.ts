@@ -3,7 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import { ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
+import { db, ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
+import { AccessControlStore, type AccessPrincipal } from '../db/access-control';
+import { clientIsRemote } from '../security/client-network';
+import {
+  anonymousOpenAccessAllowed,
+  requestClientNetworkInput
+} from '../security/request-security';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
 import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
@@ -14,9 +20,16 @@ import {
   transcoder
 } from '../transcoder/engine';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
-import { getCurrentUserId } from '../auth';
+import { normalizeContentRating } from '../content-ratings';
+import {
+  getCurrentUserId,
+  isProtectedModeEnabled,
+  resolvePrincipal,
+  type AuthPrincipal
+} from '../auth';
 
 export const apiRouter = new Hono();
+const accessControl = new AccessControlStore(db);
 
 const VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso'
@@ -66,6 +79,68 @@ interface FolderSuggestion {
 interface ByteRange {
   start: number;
   end: number;
+}
+
+function accessPrincipal(c: Context): AccessPrincipal | null {
+  const principal = resolvePrincipal(c);
+  if (principal) {
+    return { userId: principal.id, role: principal.role, active: true };
+  }
+
+  // Explicit local/open mode retains the original account-free experience.
+  // Its synthetic admin role is used only for ACL bypass; request-security
+  // middleware still locks administrative routes until auth is configured.
+  if (!isProtectedModeEnabled() && anonymousOpenAccessAllowed(c)) {
+    return { userId: getCurrentUserId(c), role: 'admin', active: true };
+  }
+  return null;
+}
+
+function requestIsRemote(c: Context): boolean {
+  return clientIsRemote(requestClientNetworkInput(c));
+}
+
+function mediaIsAccessible(
+  c: Context,
+  mediaId: string,
+  action: 'discover' | 'stream' | 'download' | 'delete' = 'discover'
+): boolean {
+  const principal = accessPrincipal(c);
+  return !!principal && accessControl.canAccessMedia(principal, mediaId, {
+    action,
+    remote: action === 'stream' && requestIsRemote(c)
+  });
+}
+
+function libraryScopeFor(c: Context): string[] | undefined {
+  const principal = accessPrincipal(c);
+  return principal ? accessControl.getLibraryScope(principal) : [];
+}
+
+function contentRatingScopeFor(c: Context) {
+  const principal = accessPrincipal(c);
+  return principal ? accessControl.getContentRatingScope(principal) : undefined;
+}
+
+function libraryIsInScope(scope: readonly string[] | undefined, libraryId: string): boolean {
+  return scope === undefined || scope.includes(libraryId);
+}
+
+function viewerSafeLibrary<T extends { path?: string }>(principal: AuthPrincipal | null, library: T): T | Omit<T, 'path'> {
+  if (principal?.role === 'admin') return library;
+  const { path: _path, ...safe } = library;
+  return safe;
+}
+
+function viewerSafeMedia<T extends { full_path?: string }>(principal: AuthPrincipal | null, media: T): T | Omit<T, 'full_path'> {
+  if (principal?.role === 'admin') return media;
+  const { full_path: _fullPath, ...safe } = media;
+  return safe;
+}
+
+function viewerSafeMediaList<T extends { full_path?: string }>(c: Context, items: T[]) {
+  const principal = resolvePrincipal(c);
+  return items.map((item) => viewerSafeMedia(principal, item));
 }
 
 async function readJsonObject(c: Context): Promise<Record<string, unknown> | null> {
@@ -345,7 +420,12 @@ apiRouter.get('/fs/suggest', (c) => {
 // ---------------- Libraries API ---------------- //
 
 apiRouter.get('/libraries', (c) => {
-  const libraries = LibraryModel.getAll();
+  const scope = libraryScopeFor(c);
+  const allowed = scope && new Set(scope);
+  const principal = resolvePrincipal(c);
+  const libraries = LibraryModel.getAll({ contentRatingScope: contentRatingScopeFor(c) })
+    .filter((library) => !allowed || allowed.has(library.id))
+    .map((library) => viewerSafeLibrary(principal, library));
   return c.json({ libraries });
 });
 
@@ -441,8 +521,15 @@ apiRouter.get('/media', (c) => {
     );
   }
 
+  const allowedLibraryIds = libraryScopeFor(c);
+  if (libraryId && !libraryIsInScope(allowedLibraryIds, libraryId)) {
+    return c.json({ items: [], total: 0 });
+  }
+
   const result = MediaModel.getAll(getCurrentUserId(c), {
     libraryId,
+    allowedLibraryIds,
+    contentRatingScope: contentRatingScopeFor(c),
     type,
     search,
     resolution,
@@ -451,12 +538,17 @@ apiRouter.get('/media', (c) => {
     offset
   });
 
-  return c.json(result);
+  return c.json({
+    ...result,
+    items: viewerSafeMediaList(c, result.items)
+  });
 });
 
 apiRouter.get('/media/continue-watching', (c) => {
-  const items = MediaModel.getContinueWatching(getCurrentUserId(c), 12);
-  return c.json({ items });
+  const items = MediaModel.getContinueWatching(
+    getCurrentUserId(c), 12, libraryScopeFor(c), contentRatingScopeFor(c)
+  );
+  return c.json({ items: viewerSafeMediaList(c, items) });
 });
 
 // ---------------- Progress Page API ---------------- //
@@ -473,14 +565,24 @@ apiRouter.get('/media/progress', (c) => {
     return c.json({ error: `limit must be between 1 and ${PROGRESS_PAGE_MAX_LIMIT}` }, 400);
   }
 
-  const items = MediaModel.getProgressItems(getCurrentUserId(c), { status, limit });
-  return c.json({ items });
+  const items = MediaModel.getProgressItems(getCurrentUserId(c), {
+    status,
+    limit,
+    allowedLibraryIds: libraryScopeFor(c),
+    contentRatingScope: contentRatingScopeFor(c)
+  });
+  return c.json({ items: viewerSafeMediaList(c, items) });
 });
 
 apiRouter.post('/media/:id/progress/watched', (c) => {
   const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
   const userId = getCurrentUserId(c);
-  const item = MediaModel.getById(id, userId);
+  const item = MediaModel.getById(
+    id, userId, libraryScopeFor(c), contentRatingScopeFor(c)
+  );
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
@@ -490,23 +592,53 @@ apiRouter.post('/media/:id/progress/watched', (c) => {
 
 apiRouter.post('/media/:id/progress/unwatched', (c) => {
   const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
   ProgressModel.remove(getCurrentUserId(c), id);
   return c.json({ success: true });
 });
 
 apiRouter.delete('/media/:id/progress', (c) => {
   const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
   ProgressModel.remove(getCurrentUserId(c), id);
   return c.json({ success: true });
 });
 
 apiRouter.get('/media/:id', (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const item = MediaModel.getById(
+    id, getCurrentUserId(c), libraryScopeFor(c), contentRatingScopeFor(c)
+  );
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
-  return c.json({ item });
+  return c.json({ item: viewerSafeMedia(resolvePrincipal(c), item) });
+});
+
+apiRouter.patch('/media/:id/content-rating', async (c) => {
+  const id = c.req.param('id');
+  if (!MediaModel.getById(id, getCurrentUserId(c))) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const body = await readJsonObject(c);
+  if (!body || (body.contentRating !== null && typeof body.contentRating !== 'string')) {
+    return c.json({ error: 'contentRating must be a supported rating string or null' }, 400);
+  }
+  const normalized = body.contentRating === null
+    ? null
+    : normalizeContentRating(body.contentRating);
+  if (body.contentRating !== null && !normalized) {
+    return c.json({ error: 'Unsupported content rating' }, 400);
+  }
+  const item = MediaModel.updateContentRating(id, normalized, getCurrentUserId(c));
+  return c.json({ item: viewerSafeMedia(resolvePrincipal(c), item!) });
 });
 
 // ---------------- Series Rollup API ---------------- //
@@ -514,37 +646,135 @@ apiRouter.get('/media/:id', (c) => {
 apiRouter.get('/series', (c) => {
   const libraryId = c.req.query('libraryId');
   const search = c.req.query('search');
-  const items = SeriesModel.getAll(getCurrentUserId(c), { libraryId, search });
+  const allowedLibraryIds = libraryScopeFor(c);
+  if (libraryId && !libraryIsInScope(allowedLibraryIds, libraryId)) {
+    return c.json({ items: [] });
+  }
+  const items = SeriesModel.getAll(getCurrentUserId(c), {
+    libraryId,
+    search,
+    allowedLibraryIds,
+    contentRatingScope: contentRatingScopeFor(c)
+  });
   return c.json({ items });
 });
 
 apiRouter.get('/series/:id', (c) => {
   const id = c.req.param('id');
   const userId = getCurrentUserId(c);
-  const series = SeriesModel.getById(id, userId);
-  if (!series) {
+  const allowedLibraryIds = libraryScopeFor(c);
+  const ratingScope = contentRatingScopeFor(c);
+  const series = SeriesModel.getById(id, userId, allowedLibraryIds, ratingScope);
+  if (!series || !libraryIsInScope(allowedLibraryIds, series.library_id)) {
     return c.json({ error: 'Series not found' }, 404);
   }
-  const seasons = SeriesModel.getSeasons(series.library_id, series.title, userId);
+  const seasons = SeriesModel.getSeasons(
+    series.library_id, series.title, userId, allowedLibraryIds, ratingScope
+  );
   return c.json({ series, seasons });
 });
 
 apiRouter.get('/series/:id/episodes', (c) => {
   const id = c.req.param('id');
   const userId = getCurrentUserId(c);
-  const series = SeriesModel.getById(id, userId);
-  if (!series) {
+  const allowedLibraryIds = libraryScopeFor(c);
+  const ratingScope = contentRatingScopeFor(c);
+  const series = SeriesModel.getById(id, userId, allowedLibraryIds, ratingScope);
+  if (!series || !libraryIsInScope(allowedLibraryIds, series.library_id)) {
     return c.json({ error: 'Series not found' }, 404);
   }
-  const items = MediaModel.getBySeries(series.library_id, series.title, userId);
-  return c.json({ series, items });
+  const items = MediaModel.getBySeries(
+    series.library_id, series.title, userId, allowedLibraryIds, ratingScope
+  );
+  return c.json({ series, items: viewerSafeMediaList(c, items) });
 });
 
 // ---------------- Direct Play Streaming (HTTP Range 206) ---------------- //
 
+apiRouter.get('/media/:id/download', (c) => {
+  const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id, 'download')) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const item = MediaModel.getById(
+    id, getCurrentUserId(c), libraryScopeFor(c), contentRatingScopeFor(c)
+  );
+  if (!item || !fs.existsSync(item.full_path)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const filename = path.basename(item.original_filename || item.full_path)
+    .replace(/[\r\n"]/g, '_');
+  c.header('Content-Type', 'application/octet-stream');
+  c.header('Content-Disposition', `attachment; filename="${filename}"`);
+  c.header('Content-Length', String(fs.statSync(item.full_path).size));
+  return c.body(Bun.file(item.full_path).stream());
+});
+
+apiRouter.delete('/media/:id/file', (c) => {
+  const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id, 'delete')) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  if (c.req.header('x-caster-confirm-delete') !== id) {
+    return c.json({ error: 'Confirm deletion with X-Caster-Confirm-Delete set to the media ID' }, 409);
+  }
+  const item = MediaModel.getById(
+    id, getCurrentUserId(c), libraryScopeFor(c), contentRatingScopeFor(c)
+  );
+  const library = item ? LibraryModel.getById(item.library_id) : null;
+  if (!item || !library) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+
+  let realLibraryPath: string;
+  let realMediaPath: string;
+  try {
+    const mediaEntry = fs.lstatSync(item.full_path);
+    if (!mediaEntry.isFile() || mediaEntry.isSymbolicLink()) {
+      return c.json({ error: 'Media source must be a regular file' }, 409);
+    }
+    realLibraryPath = fs.realpathSync.native(library.path);
+    realMediaPath = fs.realpathSync.native(item.full_path);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String(error.code)
+      : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return c.json({ error: 'Media not found' }, 404);
+    }
+    return c.json({ error: 'Media source could not be safely resolved' }, 409);
+  }
+  const relativeTarget = path.relative(realLibraryPath, realMediaPath);
+  if (!relativeTarget || relativeTarget.startsWith(`..${path.sep}`) || relativeTarget === '..' || path.isAbsolute(relativeTarget)) {
+    return c.json({ error: 'Media source is outside its library root' }, 409);
+  }
+
+  try {
+    // Re-resolve immediately before unlinking so a swapped path is denied
+    // instead of deleting a different filesystem entry.
+    if (fs.realpathSync.native(item.full_path) !== realMediaPath) {
+      return c.json({ error: 'Media source changed during deletion' }, 409);
+    }
+    fs.unlinkSync(realMediaPath);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String(error.code)
+      : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return c.json({ error: 'Media not found' }, 404);
+    }
+    return c.json({ error: 'Media source could not be deleted' }, 409);
+  }
+  MediaModel.delete(id);
+  return c.json({ success: true });
+});
+
 apiRouter.get('/media/:id/stream', async (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id, 'stream')) {
+    return c.text('Media file not found', 404);
+  }
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media file not found', 404);
   }
@@ -621,7 +851,8 @@ apiRouter.get('/media/:id/stream', async (c) => {
 
 apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id, 'stream')) return c.text('Not found', 404);
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) return c.text('Not found', 404);
 
   const playlist = transcoder.generateMasterPlaylist(id, item.width || 1920, item.height || 1080);
@@ -641,7 +872,8 @@ apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
   }
 
   const quality = requestedQuality;
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id, 'stream')) return c.text('Not found', 404);
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) return c.text('Not found', 404);
 
   const playlist = transcoder.generateVariantPlaylist(id, item.duration || 3600, quality);
@@ -672,7 +904,10 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
   if (!Number.isSafeInteger(seq)) {
     return c.text('Invalid segment name', 400);
   }
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id, 'stream')) {
+    return c.text('Media not found', 404);
+  }
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
   }
@@ -702,6 +937,9 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
 
 apiRouter.get('/media/:id/thumbnail', (c) => {
   const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id)) {
+    return c.text('Thumbnail not found', 404);
+  }
   const thumbPath = getThumbnailPath(id);
 
   if (fs.existsSync(thumbPath)) {
@@ -719,7 +957,10 @@ apiRouter.get('/media/:id/thumbnail', (c) => {
 
 apiRouter.post('/media/:id/thumbnail', async (c) => {
   const id = c.req.param('id');
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
@@ -751,7 +992,11 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
     return c.text('Invalid subtitle track', 400);
   }
 
-  const item = MediaModel.getById(id, getCurrentUserId(c));
+  if (!mediaIsAccessible(c, id, 'stream')) {
+    return c.text('Media not found', 404);
+  }
+
+  const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item || !fs.existsSync(item.full_path)) {
     return c.text('Media not found', 404);
   }
@@ -793,6 +1038,9 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
 
 apiRouter.post('/media/:id/progress', async (c) => {
   const id = c.req.param('id');
+  if (!mediaIsAccessible(c, id)) {
+    return c.json({ error: 'Media not found' }, 404);
+  }
   const body = await readJsonObject(c);
   if (!body) {
     return c.json({ error: 'Invalid JSON body' }, 400);
@@ -807,7 +1055,7 @@ apiRouter.post('/media/:id/progress', async (c) => {
     );
   }
 
-  if (!MediaModel.getById(id, getCurrentUserId(c))) {
+  if (!MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c))) {
     return c.json({ error: 'Media not found' }, 404);
   }
 
@@ -818,6 +1066,116 @@ apiRouter.post('/media/:id/progress', async (c) => {
     duration
   );
   return c.json({ progress });
+});
+
+// ---------------- Account Access Administration ---------------- //
+
+function managedAccessPrincipal(userId: string): AccessPrincipal | null {
+  const user = db.query(`
+    SELECT id, role, active FROM users WHERE id = ?
+  `).get(userId) as { id: string; role: 'admin' | 'viewer'; active: number } | null;
+  return user
+    ? { userId: user.id, role: user.role, active: user.active === 1 }
+    : null;
+}
+
+apiRouter.get('/access/users/:userId/libraries', (c) => {
+  const principal = managedAccessPrincipal(c.req.param('userId'));
+  if (!principal) return c.json({ error: 'User not found' }, 404);
+  return c.json({ libraryIds: accessControl.getAllowedLibraryIds(principal) });
+});
+
+apiRouter.put('/access/users/:userId/libraries', async (c) => {
+  const userId = c.req.param('userId');
+  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
+
+  const body = await readJsonObject(c);
+  if (!body || !Array.isArray(body.libraryIds)
+    || body.libraryIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    return c.json({ error: 'libraryIds must be an array of library IDs' }, 400);
+  }
+
+  const libraryIds = [...new Set(body.libraryIds as string[])];
+  const knownIds = new Set(LibraryModel.getAll().map((library) => library.id));
+  if (libraryIds.some((id) => !knownIds.has(id))) {
+    return c.json({ error: 'One or more libraries do not exist' }, 400);
+  }
+
+  const updateGrants = db.transaction(() => {
+    const currentIds = new Set(
+      (db.query(`
+        SELECT library_id FROM user_library_access WHERE user_id = ?
+      `).all(userId) as Array<{ library_id: string }>).map((row) => row.library_id)
+    );
+    for (const libraryId of currentIds) {
+      if (!libraryIds.includes(libraryId)) accessControl.unshareLibrary(userId, libraryId);
+    }
+    for (const libraryId of libraryIds) {
+      if (!currentIds.has(libraryId)) accessControl.shareLibrary(userId, libraryId);
+    }
+  });
+  updateGrants();
+
+  return c.json({ libraryIds });
+});
+
+apiRouter.get('/access/users/:userId/permissions', (c) => {
+  const userId = c.req.param('userId');
+  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
+  return c.json({ permissions: accessControl.getPermissions(userId) });
+});
+
+apiRouter.patch('/access/users/:userId/permissions', async (c) => {
+  const userId = c.req.param('userId');
+  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
+  const body = await readJsonObject(c);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+
+  const booleanKeys = [
+    'allowUnrated',
+    'canDownload',
+    'canStreamRemote',
+    'canDeleteMedia',
+    'canManageProfiles'
+  ] as const;
+  if (booleanKeys.some((key) => body[key] !== undefined && typeof body[key] !== 'boolean')) {
+    return c.json({ error: 'Permission flags must be boolean values' }, 400);
+  }
+  if (body.maxContentRating !== undefined
+    && body.maxContentRating !== null
+    && typeof body.maxContentRating !== 'string') {
+    return c.json({ error: 'maxContentRating must be a rating string or null' }, 400);
+  }
+
+  try {
+    const permissions = accessControl.updatePermissions(userId, {
+      maxContentRating: body.maxContentRating as string | null | undefined,
+      allowUnrated: body.allowUnrated as boolean | undefined,
+      canDownload: body.canDownload as boolean | undefined,
+      canStreamRemote: body.canStreamRemote as boolean | undefined,
+      canDeleteMedia: body.canDeleteMedia as boolean | undefined,
+      canManageProfiles: body.canManageProfiles as boolean | undefined
+    });
+    return c.json({ permissions });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid permissions' }, 400);
+  }
+});
+
+apiRouter.patch('/access/users/:userId/pin', async (c) => {
+  const userId = c.req.param('userId');
+  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
+  const body = await readJsonObject(c);
+  if (!body || (body.pin !== null && typeof body.pin !== 'string')) {
+    return c.json({ error: 'pin must be a 4 to 12 digit string or null' }, 400);
+  }
+
+  try {
+    accessControl.setProfilePin(userId, body.pin as string | null);
+    return c.json({ permissions: accessControl.getPermissions(userId) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid profile PIN' }, 400);
+  }
 });
 
 // ---------------- System Status & Hardware Accel ---------------- //
