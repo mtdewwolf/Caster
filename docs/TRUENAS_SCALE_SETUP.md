@@ -143,7 +143,8 @@ Paste the following configuration after making all of these replacements:
   source directory name.
 - Replace `3000:3000` with the recorded Caster UID and GID.
 - Replace all `/mnt/tank/...` paths with this system's dataset paths.
-- Replace the password and timezone. Keep the password out of source control.
+- Replace the timezone. Owner credentials are created in Caster after startup
+  and are never placed in the application configuration.
 
 ```yaml
 services:
@@ -165,7 +166,6 @@ services:
       TRANSCODE_MAX_CONCURRENT: "2"
       TRANSCODE_CACHE_MAX_AGE_HOURS: "24"
       TRANSCODE_CACHE_MAX_SIZE_MB: "10000"
-      ADMIN_PASSWORD: "REPLACE_WITH_A_LONG_UNIQUE_PASSWORD"
       TZ: America/Denver
     volumes:
       - type: bind
@@ -214,8 +214,9 @@ read-only. If the service repeatedly restarts, check data-dataset ACLs and the
 numeric `user` value before granting broader permissions or using privileged
 mode.
 
-Sign in with `ADMIN_PASSWORD`, open **Settings**, and add libraries by their
-container paths, for example `/media/movies`, `/media/tv`, or `/media/music`.
+From a LAN client, complete the one-time owner setup in the browser. Then open
+**Settings** and add libraries by their container paths, for example
+`/media/movies`, `/media/tv`, or `/media/music`.
 Never enter the host path `/mnt/tank/media` in Caster.
 
 ## Intel and AMD GPU access

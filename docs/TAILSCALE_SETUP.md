@@ -47,10 +47,9 @@ second application manager on TrueNAS; use the TrueNAS Apps workflow above.
 
 1. Create a Tailscale Auth Key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys):
    - Check **Reusable** and **Ephemeral** (optional, recommended for containers).
-2. On the Docker host, set both secrets and run:
+2. On the Docker host, set the Tailscale auth key and run:
    ```bash
    export TS_AUTHKEY="tskey-auth-xxxxxx-xxxxxxxx"
-   export ADMIN_PASSWORD="replace-with-a-long-unique-password"
    docker compose -f docker-compose.tailscale.yml up -d
    ```
 3. The server will appear on your Tailscale admin console as `caster-nas`.
@@ -58,6 +57,8 @@ second application manager on TrueNAS; use the TrueNAS Apps workflow above.
    ```text
    http://caster-nas:3001
    ```
+5. Complete the one-time owner setup. The Compose file permits this claim from
+   Tailscale's `100.64.0.0/10` range; normal access still requires an account.
 
 ---
 

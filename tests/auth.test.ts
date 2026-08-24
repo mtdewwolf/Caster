@@ -65,7 +65,7 @@ describe('Admin authentication', () => {
     const loginResponse = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-success-test' },
-      body: JSON.stringify({ password })
+      body: JSON.stringify({ username: 'admin', password })
     });
     const setCookie = loginResponse.headers.get('set-cookie');
 
@@ -90,6 +90,7 @@ describe('Admin authentication', () => {
       authenticated: true,
       configured: true,
       protectedMode: true,
+      setupRequired: false,
       user: { id: 'admin', username: 'admin', role: 'admin' }
     });
     expect(writeResponse.status).toBe(200);
@@ -100,7 +101,7 @@ describe('Admin authentication', () => {
     const loginResponse = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-failure-test' },
-      body: JSON.stringify({ password: 'wrong-password' })
+      body: JSON.stringify({ username: 'admin', password: 'wrong-password' })
     });
     const tokenResponse = await app.request('/api/libraries/lib_2', {
       method: 'DELETE',
@@ -128,7 +129,7 @@ describe('Admin authentication', () => {
       const response = await app.request('/api/auth/login', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ password: 'wrong-password' })
+        body: JSON.stringify({ username: 'admin', password: 'wrong-password' })
       });
       expect(response.status).toBe(401);
     }
@@ -136,7 +137,7 @@ describe('Admin authentication', () => {
     const limitedResponse = await app.request('/api/auth/login', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ password })
+      body: JSON.stringify({ username: 'admin', password })
     });
     expect(limitedResponse.status).toBe(429);
     expect(Number(limitedResponse.headers.get('Retry-After'))).toBeGreaterThan(0);
@@ -149,7 +150,7 @@ describe('Admin authentication', () => {
     const loginResponse = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-logout-test' },
-      body: JSON.stringify({ password })
+      body: JSON.stringify({ username: 'admin', password })
     });
     const cookie = loginResponse.headers.get('set-cookie')!.split(';')[0];
 
@@ -184,7 +185,7 @@ describe('Admin authentication', () => {
       const loginResponse = await firstApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'auth-restart-test' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       const cookie = loginResponse.headers.get('set-cookie')!.split(';')[0];
       const rawToken = cookie.slice(cookie.indexOf('=') + 1);
@@ -217,6 +218,7 @@ describe('Admin authentication', () => {
         authenticated: true,
         configured: true,
         protectedMode: true,
+        setupRequired: false,
         user: { id: 'admin', username: 'admin', role: 'admin' }
       });
     } finally {
@@ -244,7 +246,8 @@ describe('Admin authentication', () => {
       expect(await response.json()).toEqual({
         authenticated: false,
         configured: true,
-        protectedMode: true
+        protectedMode: true,
+        setupRequired: false
       });
       expect(database.query(`
         SELECT COUNT(*) AS count FROM auth_sessions WHERE token_hash = ?
@@ -271,7 +274,7 @@ describe('Admin authentication', () => {
       const adminLogin = await testApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'accounts-admin-login' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       expect(adminLogin.status).toBe(200);
       const adminCookie = adminLogin.headers.get('set-cookie')!.split(';')[0];
@@ -347,7 +350,7 @@ describe('Admin authentication', () => {
       const initialLogin = await testApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'rotation-initial-login' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       expect(initialLogin.status).toBe(200);
       const adminCookie = initialLogin.headers.get('set-cookie')!.split(';')[0];
@@ -372,7 +375,7 @@ describe('Admin authentication', () => {
       const login = (credential: string, key: string) => restartedApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': key },
-        body: JSON.stringify({ password: credential })
+        body: JSON.stringify({ username: 'admin', password: credential })
       });
       expect((await login(password, 'rotation-stale-env-password')).status).toBe(401);
       expect((await login(apiToken, 'rotation-stale-env-token-form')).status).toBe(401);
@@ -467,7 +470,7 @@ describe('Admin authentication', () => {
       const adminLogin = await testApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'disable-admin-login' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       const adminCookie = adminLogin.headers.get('set-cookie')!.split(';')[0];
       const createdResponse = await testApp.request('/api/auth/users', {
@@ -549,7 +552,7 @@ describe('Admin authentication', () => {
       const adminLogin = await testApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'switch-admin-login' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       const adminCookie = adminLogin.headers.get('set-cookie')!.split(';')[0];
 
@@ -642,7 +645,7 @@ describe('Admin authentication', () => {
       const secondAdminLogin = await testApp.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Real-IP': 'switch-admin-login-2' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ username: 'admin', password })
       });
       const secondAdminCookie = secondAdminLogin.headers.get('set-cookie')!.split(';')[0];
       userStore.update(target.id, { active: false });
