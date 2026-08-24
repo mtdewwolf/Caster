@@ -334,16 +334,14 @@ export const MediaModel = {
         size_bytes, format, video_codec, width, height, resolution_label,
         frame_rate, bit_rate, is_hdr, audio_codec, audio_channels,
         audio_channel_layout, audio_language, streams_json, poster_path,
-        content_rating, content_rating_level, artist, album_artist, album,
-        track_number, disc_number, genre, content_fingerprint, created_at, updated_at
+        content_rating, content_rating_level, created_at, updated_at
       ) VALUES (
         $id, $library_id, $title, $original_filename, $relative_path, $full_path,
         $type, $series_title, $season_number, $episode_number, $year, $duration,
         $size_bytes, $format, $video_codec, $width, $height, $resolution_label,
         $frame_rate, $bit_rate, $is_hdr, $audio_codec, $audio_channels,
         $audio_channel_layout, $audio_language, $streams_json, $poster_path,
-        $content_rating, $content_rating_level, $artist, $album_artist, $album,
-        $track_number, $disc_number, $genre, $content_fingerprint, $created_at, $updated_at
+        $content_rating, $content_rating_level, $created_at, $updated_at
       ) ON CONFLICT(full_path) DO UPDATE SET
         title = excluded.title,
         duration = excluded.duration,
@@ -364,13 +362,6 @@ export const MediaModel = {
         poster_path = excluded.poster_path,
         content_rating = COALESCE(excluded.content_rating, media_items.content_rating),
         content_rating_level = COALESCE(excluded.content_rating_level, media_items.content_rating_level),
-        artist = excluded.artist,
-        album_artist = excluded.album_artist,
-        album = excluded.album,
-        track_number = excluded.track_number,
-        disc_number = excluded.disc_number,
-        genre = excluded.genre,
-        content_fingerprint = excluded.content_fingerprint,
         updated_at = excluded.updated_at
     `);
 
@@ -404,13 +395,6 @@ export const MediaModel = {
       $poster_path: item.poster_path || null,
       $content_rating: normalizeContentRating(item.content_rating),
       $content_rating_level: contentRatingLevel(item.content_rating),
-      $artist: item.artist || null,
-      $album_artist: item.album_artist || null,
-      $album: item.album || null,
-      $track_number: item.track_number ?? null,
-      $disc_number: item.disc_number ?? null,
-      $genre: item.genre || null,
-      $content_fingerprint: item.content_fingerprint || null,
       $created_at: item.created_at,
       $updated_at: item.updated_at
     });
@@ -721,12 +705,6 @@ function formatMediaRow(row: any): MediaItem {
     audio_channels: row.audio_channels,
     audio_channel_layout: row.audio_channel_layout,
     audio_language: row.audio_language,
-    artist: row.artist ?? undefined,
-    album_artist: row.album_artist ?? undefined,
-    album: row.album ?? undefined,
-    track_number: row.track_number ?? undefined,
-    disc_number: row.disc_number ?? undefined,
-    genre: row.genre ?? undefined,
     streams_json: row.streams_json,
     poster_path: row.poster_path,
     content_rating: row.content_rating ?? undefined,

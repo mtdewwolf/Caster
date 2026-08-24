@@ -1,7 +1,6 @@
 import React from 'react';
 import { Play, RotateCcw, X, HardDrive, FileVideo, Volume2, Subtitles, Layers } from 'lucide-react';
 import type { MediaItem, MediaStreamTrack } from '../types';
-import { MarkerEditor } from '../features/markers/MarkerEditor';
 
 interface MediaDetailModalProps {
   item: MediaItem;
@@ -188,11 +187,6 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
               </div>
             </div>
           </div>
-
-          {/* Absolute paths are admin-only, making this an admin-only editor without widening modal props. */}
-          {item.type === 'episode' && item.full_path ? (
-            <MarkerEditor mediaId={item.id} duration={item.duration} />
-          ) : null}
 
           {/* The API deliberately omits absolute paths from viewer responses. */}
           {item.full_path ? (
