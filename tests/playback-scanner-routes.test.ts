@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { requireAdminForMutations } from '../apps/server/src/auth';
 import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
 import { db } from '../apps/server/src/db';
+import { AccountProvisioningStore } from '../apps/server/src/db/account-provisioning';
 import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
@@ -64,6 +65,7 @@ describe('scanner and playback route failures', () => {
     const users = new SqliteUserStore(db);
     users.create(adminId, adminId, 'admin');
     users.setCredential(adminId, 'api_token', adminToken);
+    new AccountProvisioningStore(db).claimLegacyOwnerIfConfigured(adminId);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-playback-scanner-'));
     scanRoot = path.join(fixtureRoot, 'empty-library');
