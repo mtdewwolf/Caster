@@ -47,6 +47,7 @@ COPY package.json ./package.json
 COPY apps/server/package.json ./apps/server/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY --from=production-dependencies /app/node_modules ./node_modules
+COPY --from=production-dependencies /app/apps/server/node_modules ./apps/server/node_modules
 
 # Copy server source
 COPY apps/server/src ./apps/server/src
