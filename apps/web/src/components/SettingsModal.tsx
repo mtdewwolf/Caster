@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, FolderPlus, Trash2, RefreshCw, Cpu, Shield, ExternalLink, HardDrive, CheckCircle, FolderOpen } from 'lucide-react';
+import { X, FolderPlus, Trash2, RefreshCw, Cpu, Shield, ExternalLink, HardDrive, CheckCircle, FolderOpen, Users } from 'lucide-react';
 import type { Library, SystemHardwareStatus, ScanStatus } from '../types';
 import { api } from '../api';
 import { FolderBrowserModal } from './FolderBrowserModal';
+import { AccountManagement } from './AccountManagement';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -10,7 +11,7 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrariesChanged }) => {
-  const [activeTab, setActiveTab] = useState<'libraries' | 'hardware' | 'tailscale'>('libraries');
+  const [activeTab, setActiveTab] = useState<'libraries' | 'accounts' | 'hardware' | 'tailscale'>('libraries');
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
@@ -106,14 +107,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="relative w-full max-w-2xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        data-testid="settings-dialog"
+        className="relative w-full max-w-2xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+      >
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-slate-950/50">
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+          <h2 id="settings-title" className="text-lg font-bold text-white flex items-center gap-2">
             <span>Server Settings & Configuration</span>
           </h2>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close server settings"
             className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -121,8 +130,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-white/10 bg-slate-950/30 px-6 gap-6 text-sm font-medium">
+        <div role="tablist" aria-label="Server settings sections" className="flex gap-6 overflow-x-auto border-b border-white/10 bg-slate-950/30 px-6 text-sm font-medium">
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'libraries'}
             onClick={() => setActiveTab('libraries')}
             className={`py-3 border-b-2 flex items-center gap-2 transition-colors ${
               activeTab === 'libraries'
@@ -135,6 +147,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'accounts'}
+            onClick={() => setActiveTab('accounts')}
+            className={`py-3 border-b-2 flex items-center gap-2 transition-colors ${
+              activeTab === 'accounts'
+                ? 'border-blue-500 text-blue-400 font-semibold'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>Accounts</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'hardware'}
             onClick={() => setActiveTab('hardware')}
             className={`py-3 border-b-2 flex items-center gap-2 transition-colors ${
               activeTab === 'hardware'
@@ -147,6 +177,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           </button>
 
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'tailscale'}
             onClick={() => setActiveTab('tailscale')}
             className={`py-3 border-b-2 flex items-center gap-2 transition-colors ${
               activeTab === 'tailscale'
@@ -312,6 +345,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           )}
 
           {/* Tab 2: Hardware Transcoding */}
+          {activeTab === 'accounts' ? <AccountManagement /> : null}
+
+          {/* Tab 3: Hardware Transcoding */}
           {activeTab === 'hardware' && (
             <div className="space-y-6">
               <div className="p-4 bg-slate-950/60 border border-white/5 rounded-xl space-y-3">

@@ -22,10 +22,12 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
   const [seasons, setSeasons] = useState<SeriesSeason[]>([]);
   const [episodes, setEpisodes] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(null);
     (async () => {
       try {
         const [detailRes, episodesRes] = await Promise.all([
@@ -37,6 +39,12 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
         setSeasons(detailRes.seasons || []);
         setEpisodes(episodesRes.items || []);
       } catch (err) {
+        if (!cancelled) {
+          setSeries(null);
+          setSeasons([]);
+          setEpisodes([]);
+          setError(err instanceof Error ? err.message : 'Unable to load series');
+        }
         console.error('Error fetching series detail:', err);
       } finally {
         if (!cancelled) setLoading(false);
@@ -66,8 +74,8 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
 
   if (!series) {
     return (
-      <div className="py-20 text-center text-slate-400 text-sm">
-        Series not found.
+      <div role={error ? 'alert' : undefined} className="py-20 text-center text-slate-400 text-sm">
+        {error || 'Series not found.'}
         <button onClick={onBack} className="ml-2 text-blue-400 hover:text-blue-300">
           Go back
         </button>

@@ -3,20 +3,32 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
+import { db, initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
+import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanLibrary } from '../apps/server/src/scanner/indexer';
 import { getThumbnailPath } from '../apps/server/src/scanner/thumbnails';
 
 describe('Thumbnail generation and backfill', () => {
   const originalThumbnailDirectory = process.env.THUMBNAILS_DIR;
+  const adminId = `thumbnail-admin-${crypto.randomUUID()}`;
+  const adminToken = `thumbnail-token-${crypto.randomUUID()}`;
   let fixtureRoot: string;
   let thumbnailDirectory: string;
   let libraryId: string;
   let mediaId: string;
 
+  function adminRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `Bearer ${adminToken}`);
+    return apiRouter.request(pathname, { ...init, headers });
+  }
+
   beforeAll(async () => {
     initDatabase();
+    const users = new SqliteUserStore(db);
+    users.create(adminId, adminId, 'admin');
+    users.setCredential(adminId, 'api_token', adminToken);
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-thumbnails-'));
     thumbnailDirectory = path.join(fixtureRoot, 'thumbnails');
     process.env.THUMBNAILS_DIR = thumbnailDirectory;
@@ -52,6 +64,7 @@ describe('Thumbnail generation and backfill', () => {
 
   afterAll(() => {
     if (libraryId) LibraryModel.delete(libraryId);
+    db.run('DELETE FROM users WHERE id = ?', [adminId]);
     if (originalThumbnailDirectory === undefined) delete process.env.THUMBNAILS_DIR;
     else process.env.THUMBNAILS_DIR = originalThumbnailDirectory;
 
@@ -78,7 +91,7 @@ describe('Thumbnail generation and backfill', () => {
   it('force-regenerates a thumbnail through POST and serves it from the configured directory', async () => {
     fs.writeFileSync(getThumbnailPath(mediaId), 'stale');
 
-    const regenerateResponse = await apiRouter.request(`/media/${mediaId}/thumbnail`, { method: 'POST' });
+    const regenerateResponse = await adminRequest(`/media/${mediaId}/thumbnail`, { method: 'POST' });
 
     expect(regenerateResponse.status).toBe(200);
     expect(await regenerateResponse.json()).toEqual({
@@ -87,7 +100,7 @@ describe('Thumbnail generation and backfill', () => {
     });
     expect(fs.statSync(getThumbnailPath(mediaId)).size).toBeGreaterThan('stale'.length);
 
-    const thumbnailResponse = await apiRouter.request(`/media/${mediaId}/thumbnail`);
+    const thumbnailResponse = await adminRequest(`/media/${mediaId}/thumbnail`);
     expect(thumbnailResponse.status).toBe(200);
     expect(thumbnailResponse.headers.get('Content-Type')).toBe('image/jpeg');
   });

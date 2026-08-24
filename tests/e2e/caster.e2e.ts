@@ -17,16 +17,14 @@ async function openCaster(page: Page) {
 }
 
 async function signInAsAdmin(page: Page, continueToSettings = false) {
-  await page
-    .getByTitle(continueToSettings ? 'Server Settings' : 'Sign in for admin access')
-    .click();
+  await page.getByTitle(continueToSettings ? 'Server Settings' : 'Sign in to Caster').click();
 
-  const dialog = page.getByRole('dialog', { name: 'Admin access' });
+  const dialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel('Admin password or token').fill(E2E_ADMIN_PASSWORD);
-  await dialog.getByRole('button', { name: 'Sign in as admin' }).click();
+  await dialog.getByLabel('Password').fill(E2E_ADMIN_PASSWORD);
+  await dialog.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByTitle('Sign out of admin mode')).toBeVisible();
+  await expect(page.getByTitle('Sign out admin')).toBeVisible();
 }
 
 async function fetchFromPage(
@@ -60,13 +58,13 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
   expect(blockedMutation.status).toBe(401);
 
   await page.getByTitle('Server Settings').click();
-  const loginDialog = page.getByRole('dialog', { name: 'Admin access' });
-  await loginDialog.getByLabel('Admin password or token').fill('incorrect-e2e-password');
-  await loginDialog.getByRole('button', { name: 'Sign in as admin' }).click();
-  await expect(loginDialog.getByRole('alert')).toHaveText('Invalid admin credential');
+  const loginDialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
+  await loginDialog.getByLabel('Password').fill('incorrect-e2e-password');
+  await loginDialog.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(loginDialog.getByRole('alert')).toHaveText('Invalid username or credential');
 
-  await loginDialog.getByLabel('Admin password or token').fill(E2E_ADMIN_PASSWORD);
-  await loginDialog.getByRole('button', { name: 'Sign in as admin' }).click();
+  await loginDialog.getByLabel('Password').fill(E2E_ADMIN_PASSWORD);
+  await loginDialog.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(loginDialog).toBeHidden();
   await expect(
     page.getByRole('heading', { name: 'Server Settings & Configuration' })
@@ -118,6 +116,7 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
 
 test('browses the movie library and combines resolution and title filters', async ({ page }) => {
   await openCaster(page);
+  await signInAsAdmin(page);
 
   const movieResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -200,4 +199,24 @@ test('opens direct playback and restores persisted resume progress', async ({ pa
   await page.getByRole('heading', { name: MOONRISE_TITLE, exact: true }).click();
   await expect(page.getByRole('button', { name: 'Resume at 0m 42s' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Play from Beginning' })).toBeVisible();
+});
+
+test('clears authenticated UI when a protected request reports an expired session', async ({ page }) => {
+  await openCaster(page);
+  await signInAsAdmin(page);
+
+  await page.route((url) => url.pathname === '/api/media', async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Your session has expired' })
+    });
+  });
+
+  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: 'Sign in to view this Caster library' })).toBeVisible();
+  await expect(page.getByText('Your session has expired')).toBeVisible();
+  await expect(page.getByTitle('Sign out admin')).toHaveCount(0);
+  await expect(page.getByRole('main').getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
 });

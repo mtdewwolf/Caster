@@ -3,72 +3,128 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { Hono } from 'hono';
 import { getConnInfo } from 'hono/bun';
+import { db } from './db';
+import { AccessControlStore } from './db/access-control';
+import { SqliteSessionStore, type SessionStore } from './db/session-store';
+import { SqliteUserStore, type UserRecord, type UserRole } from './db/user-store';
+import { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
 
 const SESSION_COOKIE = 'caster_admin_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
+const PROFILE_SWITCH_WINDOW_MS = 15 * 60 * 1000;
+const MAX_PROFILE_SWITCH_FAILURES = 5;
+const MAX_PROFILE_SWITCH_ATTEMPTS = 10_000;
+const SESSION_PRUNE_INTERVAL_MS = 15 * 60 * 1000;
+const SESSION_PRUNE_BATCH_SIZE = 100;
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const PUBLIC_AUTH_MUTATIONS = new Set(['/api/auth/login', '/api/auth/logout']);
+const PUBLIC_AUTH_MUTATIONS = new Set([
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/profile/switch'
+]);
 
-export const ADMIN_USER_ID = 'admin';
-export const PUBLIC_USER_ID = 'public';
+export { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
+export type { UserRole } from './db/user-store';
+
+export interface AuthPrincipal {
+  id: string;
+  username: string;
+  role: UserRole;
+  credential: 'cookie' | 'bearer';
+}
 
 interface LoginAttempt {
   failures: number;
   resetAt: number;
 }
 
-const sessions = new Map<string, number>();
+interface PublicUser {
+  id: string;
+  username: string;
+  role: UserRole;
+}
+
 const loginAttempts = new Map<string, LoginAttempt>();
+const profileSwitchAttempts = new Map<string, LoginAttempt>();
+const defaultSessionStore = new SqliteSessionStore(db);
+const defaultUserStore = new SqliteUserStore(db);
+const defaultAccessControlStore = new AccessControlStore(db);
+const lastSessionPruneAt = new WeakMap<SessionStore, number>();
+const bootstrappedEnvironment = new WeakMap<SqliteUserStore, string>();
 
-function configuredCredentials(): string[] {
-  return [process.env.ADMIN_PASSWORD, process.env.ADMIN_TOKEN].filter(
-    (value): value is string => typeof value === 'string' && value.length > 0
-  );
+function configuredEnvironmentFingerprint(): string {
+  return crypto.createHash('sha256').update(JSON.stringify([
+    process.env.ADMIN_PASSWORD ?? null,
+    process.env.ADMIN_TOKEN ?? null
+  ])).digest('hex');
 }
 
-export function isAuthConfigured(): boolean {
-  return configuredCredentials().length > 0;
-}
+/** Import legacy environment credentials without ever persisting their raw values. */
+export function bootstrapLegacyAdmin(userStore: SqliteUserStore = defaultUserStore): void {
+  const fingerprint = configuredEnvironmentFingerprint();
+  if (bootstrappedEnvironment.get(userStore) === fingerprint) return;
 
-function digest(value: string): Buffer {
-  return crypto.createHash('sha256').update(value).digest();
-}
-
-function credentialMatches(candidate: string): boolean {
-  const candidateDigest = digest(candidate);
-  let matches = false;
-
-  for (const configured of configuredCredentials()) {
-    matches = crypto.timingSafeEqual(candidateDigest, digest(configured)) || matches;
+  let admin = userStore.findById(ADMIN_USER_ID);
+  if (!admin) admin = userStore.create(ADMIN_USER_ID, 'admin', 'admin');
+  // Existing hashes win, so a password changed through account management is
+  // not undone by a stale environment variable on the next restart.
+  if (process.env.ADMIN_PASSWORD && !userStore.getCredentialHash(admin.id, 'password')) {
+    userStore.setCredential(admin.id, 'password', process.env.ADMIN_PASSWORD);
   }
-
-  return matches;
+  if (process.env.ADMIN_TOKEN && !userStore.getCredentialHash(admin.id, 'api_token')) {
+    userStore.setCredential(admin.id, 'api_token', process.env.ADMIN_TOKEN);
+  }
+  bootstrappedEnvironment.set(userStore, fingerprint);
 }
 
-function pruneExpiredSessions(now = Date.now()): void {
-  for (const [token, expiresAt] of sessions) {
-    if (expiresAt <= now) sessions.delete(token);
+export function isAuthConfigured(userStore: SqliteUserStore = defaultUserStore): boolean {
+  try {
+    bootstrapLegacyAdmin(userStore);
+    return userStore.hasAnyCredential();
+  } catch {
+    // This is queried during startup before migrations in some consumers.
+    return Boolean(process.env.ADMIN_PASSWORD || process.env.ADMIN_TOKEN);
   }
 }
 
-function createSession(): string {
-  pruneExpiredSessions();
+export function isProtectedModeEnabled(userStore: SqliteUserStore = defaultUserStore): boolean {
+  return isAuthConfigured(userStore);
+}
+
+export function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function pruneExpiredSessionBatch(sessionStore: SessionStore, now: number): void {
+  lastSessionPruneAt.set(sessionStore, now);
+  sessionStore.pruneExpired(now, SESSION_PRUNE_BATCH_SIZE);
+}
+
+function maybePruneExpiredSessions(sessionStore: SessionStore, now: number): void {
+  const lastPrunedAt = lastSessionPruneAt.get(sessionStore) ?? 0;
+  if (now - lastPrunedAt < SESSION_PRUNE_INTERVAL_MS) return;
+  pruneExpiredSessionBatch(sessionStore, now);
+}
+
+export function startSessionPruner(
+  sessionStore: SessionStore = defaultSessionStore
+): () => void {
+  pruneExpiredSessionBatch(sessionStore, Date.now());
+  const timer = setInterval(() => {
+    pruneExpiredSessionBatch(sessionStore, Date.now());
+  }, SESSION_PRUNE_INTERVAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+function createSession(sessionStore: SessionStore, userId: string): string {
+  const now = Date.now();
+  maybePruneExpiredSessions(sessionStore, now);
   const token = crypto.randomBytes(32).toString('base64url');
-  sessions.set(token, Date.now() + SESSION_TTL_SECONDS * 1000);
+  sessionStore.create(hashSessionToken(token), userId, now, now + SESSION_TTL_SECONDS * 1000);
   return token;
-}
-
-function isValidSession(token: string | undefined): boolean {
-  if (!token) return false;
-  const expiresAt = sessions.get(token);
-  if (!expiresAt) return false;
-  if (expiresAt <= Date.now()) {
-    sessions.delete(token);
-    return false;
-  }
-  return true;
 }
 
 function bearerToken(c: Context): string | undefined {
@@ -77,20 +133,40 @@ function bearerToken(c: Context): string | undefined {
   return authorization.slice('Bearer '.length).trim();
 }
 
-function hasAdminAccess(c: Context): boolean {
-  const bearer = bearerToken(c);
-  if (bearer && credentialMatches(bearer)) return true;
-  return isValidSession(getCookie(c, SESSION_COOKIE));
+function asPrincipal(user: UserRecord, credential: AuthPrincipal['credential']): AuthPrincipal {
+  return { id: user.id, username: user.username, role: user.role, credential };
 }
 
-/**
- * Resolve the progress owner for this request. The current authentication
- * implementation has one authenticated principal; keeping this mapping here
- * lets a future multi-user auth layer replace it without changing media and
- * progress routes again.
- */
+/** Resolves only active users. Disabled-user sessions are invalidated immediately. */
+export function resolvePrincipal(
+  c: Context,
+  sessionStore: SessionStore = defaultSessionStore,
+  userStore: SqliteUserStore = defaultUserStore
+): AuthPrincipal | null {
+  bootstrapLegacyAdmin(userStore);
+  const bearer = bearerToken(c);
+  if (bearer) {
+    const user = userStore.findActiveByApiToken(bearer);
+    if (user) return asPrincipal(user, 'bearer');
+  }
+
+  const token = getCookie(c, SESSION_COOKIE);
+  if (!token) return null;
+  const now = Date.now();
+  maybePruneExpiredSessions(sessionStore, now);
+  const tokenHash = hashSessionToken(token);
+  const session = sessionStore.findValid(tokenHash, now);
+  if (!session) return null;
+  const user = userStore.findById(session.user_id);
+  if (!user?.active) {
+    sessionStore.invalidate(tokenHash);
+    return null;
+  }
+  return asPrincipal(user, 'cookie');
+}
+
 export function getCurrentUserId(c: Context): string {
-  return hasAdminAccess(c) ? ADMIN_USER_ID : PUBLIC_USER_ID;
+  return resolvePrincipal(c)?.id ?? PUBLIC_USER_ID;
 }
 
 function requestIsSecure(c: Context): boolean {
@@ -103,15 +179,10 @@ function loginKey(c: Context): string {
     const remoteAddress = getConnInfo(c).remote.address;
     if (remoteAddress) return remoteAddress;
   } catch {
-    // Unit tests and non-Bun adapters do not expose Bun's server connection info.
+    // Unit tests and non-Bun adapters do not expose Bun's connection info.
   }
-
-  return (
-    c.req.header('cf-connecting-ip') ||
-    c.req.header('x-real-ip') ||
-    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
-    'unknown'
-  );
+  return c.req.header('cf-connecting-ip') || c.req.header('x-real-ip') ||
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() || 'unknown';
 }
 
 function currentLoginAttempt(key: string): LoginAttempt | undefined {
@@ -131,85 +202,351 @@ function recordLoginFailure(key: string): void {
   });
 }
 
+function profileSwitchKey(sessionToken: string, username: string): string {
+  return crypto.createHash('sha256')
+    .update(sessionToken)
+    .update('\0')
+    .update(username.toLocaleLowerCase('en-US'))
+    .digest('hex');
+}
+
+function currentProfileSwitchAttempt(key: string, now = Date.now()): LoginAttempt | undefined {
+  const attempt = profileSwitchAttempts.get(key);
+  if (attempt && attempt.resetAt <= now) {
+    profileSwitchAttempts.delete(key);
+    return undefined;
+  }
+  return attempt;
+}
+
+function pruneProfileSwitchAttempts(now: number): void {
+  for (const [key, attempt] of profileSwitchAttempts) {
+    if (attempt.resetAt <= now) profileSwitchAttempts.delete(key);
+  }
+  while (profileSwitchAttempts.size >= MAX_PROFILE_SWITCH_ATTEMPTS) {
+    const oldestKey = profileSwitchAttempts.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    profileSwitchAttempts.delete(oldestKey);
+  }
+}
+
+function recordProfileSwitchFailure(key: string, now = Date.now()): void {
+  const existing = currentProfileSwitchAttempt(key, now);
+  if (!existing) pruneProfileSwitchAttempts(now);
+  profileSwitchAttempts.delete(key);
+  profileSwitchAttempts.set(key, {
+    failures: (existing?.failures ?? 0) + 1,
+    resetAt: existing?.resetAt ?? now + PROFILE_SWITCH_WINDOW_MS
+  });
+}
+
+function invalidProfileOrPin(c: Context) {
+  return c.json({ error: 'Invalid profile or PIN' }, 401);
+}
+
+function unauthorized(c: Context) {
+  c.header('WWW-Authenticate', 'Bearer');
+  return c.json({ error: 'Authentication required' }, 401);
+}
+
+export const requireAuthenticated: MiddlewareHandler = async (c, next) => {
+  if (!isAuthConfigured()) {
+    return c.json({ error: 'Authentication is not configured on this server' }, 503);
+  }
+  if (!resolvePrincipal(c)) return unauthorized(c);
+  await next();
+};
+
+export const requireAdmin: MiddlewareHandler = async (c, next) => {
+  if (!isAuthConfigured()) {
+    return c.json({ error: 'Admin authentication is not configured on this server' }, 503);
+  }
+  const principal = resolvePrincipal(c);
+  if (!principal) return unauthorized(c);
+  if (principal.role !== 'admin') return c.json({ error: 'Administrator access required' }, 403);
+  await next();
+};
+
 export const requireAdminForMutations: MiddlewareHandler = async (c, next) => {
   if (!MUTATION_METHODS.has(c.req.method) || PUBLIC_AUTH_MUTATIONS.has(c.req.path)) {
     await next();
     return;
   }
-
-  if (!isAuthConfigured()) {
-    return c.json(
-      { error: 'Admin authentication is not configured on this server' },
-      503
-    );
-  }
-
-  if (!hasAdminAccess(c)) {
-    c.header('WWW-Authenticate', 'Bearer');
-    return c.json({ error: 'Admin authentication required' }, 401);
-  }
-
-  await next();
+  return requireAdmin(c, next);
 };
 
-export const authRouter = new Hono();
+function publicUser(user: UserRecord | AuthPrincipal): PublicUser {
+  return { id: user.id, username: user.username, role: user.role };
+}
 
-authRouter.get('/session', (c) => {
-  c.header('Cache-Control', 'no-store');
-  return c.json({
-    authenticated: isAuthConfigured() && hasAdminAccess(c),
-    configured: isAuthConfigured()
-  });
-});
+function validUsername(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const username = value.trim();
+  return username.length >= 1 && username.length <= 64 ? username : null;
+}
 
-authRouter.post('/login', async (c) => {
-  c.header('Cache-Control', 'no-store');
+function validRole(value: unknown): value is UserRole {
+  return value === 'admin' || value === 'viewer';
+}
 
-  if (!isAuthConfigured()) {
-    return c.json(
-      { error: 'Set ADMIN_PASSWORD or ADMIN_TOKEN on the server before signing in' },
-      503
-    );
+function accountError(error: unknown): { message: string; status: 400 | 409 } {
+  if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+    return { message: 'That username is already in use', status: 409 };
+  }
+  return { message: 'The account could not be updated', status: 400 };
+}
+
+export function createAuthRouter(
+  sessionStore: SessionStore = defaultSessionStore,
+  userStore: SqliteUserStore = defaultUserStore,
+  accessControlStore: Pick<AccessControlStore, 'verifyProfilePin' | 'canUseCapability'> =
+    defaultAccessControlStore
+): Hono {
+  const router = new Hono();
+
+  function adminForRequest(c: Context): AuthPrincipal | Response {
+    const principal = resolvePrincipal(c, sessionStore, userStore);
+    if (!principal) return unauthorized(c);
+    if (principal.role !== 'admin') return c.json({ error: 'Administrator access required' }, 403);
+    return principal;
   }
 
-  const key = loginKey(c);
-  const attempt = currentLoginAttempt(key);
-  if (attempt && attempt.failures >= MAX_LOGIN_FAILURES) {
-    const retryAfter = Math.max(1, Math.ceil((attempt.resetAt - Date.now()) / 1000));
-    c.header('Retry-After', retryAfter.toString());
-    return c.json({ error: 'Too many sign-in attempts. Try again later.' }, 429);
-  }
-
-  let credential = '';
-  try {
-    const body = await c.req.json<{ password?: unknown }>();
-    credential = typeof body.password === 'string' ? body.password : '';
-  } catch {
-    return c.json({ error: 'A password or token is required' }, 400);
-  }
-
-  if (credential.length > 4096 || !credentialMatches(credential)) {
-    recordLoginFailure(key);
-    return c.json({ error: 'Invalid admin credential' }, 401);
-  }
-
-  loginAttempts.delete(key);
-  const token = createSession();
-  setCookie(c, SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'Strict',
-    secure: requestIsSecure(c),
-    path: '/',
-    maxAge: SESSION_TTL_SECONDS
+  router.get('/session', (c) => {
+    c.header('Cache-Control', 'no-store');
+    const configured = isAuthConfigured(userStore);
+    const principal = configured ? resolvePrincipal(c, sessionStore, userStore) : null;
+    return c.json({
+      authenticated: principal !== null,
+      configured,
+      protectedMode: configured,
+      ...(principal ? { user: publicUser(principal) } : {})
+    });
   });
 
-  return c.json({ authenticated: true });
-});
+  router.post('/login', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    if (!isAuthConfigured(userStore)) {
+      return c.json({ error: 'Set ADMIN_PASSWORD or ADMIN_TOKEN on the server before signing in' }, 503);
+    }
 
-authRouter.post('/logout', (c) => {
-  const token = getCookie(c, SESSION_COOKIE);
-  if (token) sessions.delete(token);
-  deleteCookie(c, SESSION_COOKIE, { path: '/' });
-  c.header('Cache-Control', 'no-store');
-  return c.json({ authenticated: false });
-});
+    const key = loginKey(c);
+    const attempt = currentLoginAttempt(key);
+    if (attempt && attempt.failures >= MAX_LOGIN_FAILURES) {
+      const retryAfter = Math.max(1, Math.ceil((attempt.resetAt - Date.now()) / 1000));
+      c.header('Retry-After', retryAfter.toString());
+      return c.json({ error: 'Too many sign-in attempts. Try again later.' }, 429);
+    }
+
+    let body: { username?: unknown; password?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A password or token is required' }, 400);
+    }
+    const password = typeof body.password === 'string' ? body.password : '';
+    const username = body.username === undefined ? 'admin' : validUsername(body.username);
+    const user = username ? userStore.findByUsername(username) : null;
+    const passwordMatches = Boolean(user?.active && password.length <= 4096 &&
+      userStore.credentialMatches(user.id, 'password', password));
+    // ADMIN_TOKEN historically worked in the password-only browser form.
+    const legacyTokenMatches = Boolean(body.username === undefined && user?.id === ADMIN_USER_ID &&
+      user.active && password.length <= 4096 &&
+      userStore.credentialMatches(user.id, 'api_token', password));
+    if (!user || (!passwordMatches && !legacyTokenMatches)) {
+      recordLoginFailure(key);
+      return c.json({ error: 'Invalid username or credential' }, 401);
+    }
+
+    loginAttempts.delete(key);
+    const token = createSession(sessionStore, user.id);
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'Strict',
+      secure: requestIsSecure(c),
+      path: '/',
+      maxAge: SESSION_TTL_SECONDS
+    });
+    return c.json({ authenticated: true, user: publicUser(user) });
+  });
+
+  router.post('/logout', (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    if (token) sessionStore.invalidate(hashSessionToken(token));
+    deleteCookie(c, SESSION_COOKIE, { path: '/' });
+    c.header('Cache-Control', 'no-store');
+    return c.json({ authenticated: false });
+  });
+
+  router.post('/profile/switch', async (c) => {
+    const current = resolvePrincipal(c, sessionStore, userStore);
+    if (!current) return unauthorized(c);
+    if (current.credential !== 'cookie') {
+      return c.json({ error: 'A browser session is required to switch profiles' }, 403);
+    }
+    if (current.role !== 'admin' && !accessControlStore.canUseCapability({
+      userId: current.id,
+      role: current.role,
+      active: true
+    }, 'manage_profiles')) {
+      return c.json({ error: 'Profile switching is not permitted' }, 403);
+    }
+
+    let body: { username?: unknown; pin?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return invalidProfileOrPin(c);
+    }
+    const username = validUsername(body.username);
+    const pin = typeof body.pin === 'string' ? body.pin : '';
+    if (!username || !/^\d{4,12}$/.test(pin)) {
+      return invalidProfileOrPin(c);
+    }
+
+    const currentToken = getCookie(c, SESSION_COOKIE)!;
+    const attemptKey = profileSwitchKey(currentToken, username);
+    const attempt = currentProfileSwitchAttempt(attemptKey);
+    if (attempt && attempt.failures >= MAX_PROFILE_SWITCH_FAILURES) {
+      const retryAfter = Math.max(1, Math.ceil((attempt.resetAt - Date.now()) / 1000));
+      c.header('Retry-After', retryAfter.toString());
+      return c.json({ error: 'Too many profile switch attempts. Try again later.' }, 429);
+    }
+
+    const target = userStore.findByUsername(username);
+    // Profile PINs can only enter viewer accounts. In particular, a viewer
+    // session can never use a PIN to escalate into an administrator account.
+    const pinMatches = Boolean(target?.active && accessControlStore.verifyProfilePin(target.id, pin));
+    if (!target?.active || target.role !== 'viewer' || !pinMatches) {
+      recordProfileSwitchFailure(attemptKey);
+      return invalidProfileOrPin(c);
+    }
+
+    profileSwitchAttempts.delete(attemptKey);
+    const replacementToken = createSession(sessionStore, target.id);
+    sessionStore.invalidate(hashSessionToken(currentToken));
+    setCookie(c, SESSION_COOKIE, replacementToken, {
+      httpOnly: true,
+      sameSite: 'Strict',
+      secure: requestIsSecure(c),
+      path: '/',
+      maxAge: SESSION_TTL_SECONDS
+    });
+    c.header('Cache-Control', 'no-store');
+    return c.json({ authenticated: true, user: publicUser(target) });
+  });
+
+  router.get('/users', (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    return c.json({ users: userStore.list().map((user) => ({
+      ...publicUser(user), active: user.active
+    })) });
+  });
+
+  router.post('/users', async (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    let body: { username?: unknown; password?: unknown; role?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A valid account body is required' }, 400);
+    }
+    const username = validUsername(body.username);
+    const password = typeof body.password === 'string' ? body.password : '';
+    const role = body.role ?? 'viewer';
+    if (!username || password.length < 8 || password.length > 4096 || !validRole(role)) {
+      return c.json({ error: 'Username, role, and a password of at least 8 characters are required' }, 400);
+    }
+    try {
+      const user = userStore.create(crypto.randomUUID(), username, role);
+      userStore.setCredential(user.id, 'password', password);
+      return c.json({ user: { ...publicUser(user), active: user.active } }, 201);
+    } catch (error) {
+      const response = accountError(error);
+      return c.json({ error: response.message }, response.status);
+    }
+  });
+
+  router.patch('/users/:id', async (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    const target = userStore.findById(c.req.param('id'));
+    if (!target) return c.json({ error: 'User not found' }, 404);
+
+    let body: {
+      username?: unknown;
+      password?: unknown;
+      apiToken?: unknown;
+      role?: unknown;
+      active?: unknown;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'A valid account body is required' }, 400);
+    }
+    const username = body.username === undefined ? undefined : validUsername(body.username);
+    const role = body.role === undefined ? undefined : body.role;
+    const active = body.active === undefined ? undefined : body.active;
+    const password = body.password === undefined ? undefined : body.password;
+    const apiToken = body.apiToken === undefined ? undefined : body.apiToken;
+    if (body.username !== undefined && !username) return c.json({ error: 'Invalid username' }, 400);
+    if (role !== undefined && !validRole(role)) return c.json({ error: 'Invalid role' }, 400);
+    if (active !== undefined && typeof active !== 'boolean') return c.json({ error: 'Invalid active state' }, 400);
+    if (password !== undefined && (typeof password !== 'string' || password.length < 8 || password.length > 4096)) {
+      return c.json({ error: 'Passwords must be between 8 and 4096 characters' }, 400);
+    }
+    if (apiToken !== undefined &&
+      (typeof apiToken !== 'string' || apiToken.length < 16 || apiToken.length > 4096)) {
+      return c.json({ error: 'API tokens must be between 16 and 4096 characters' }, 400);
+    }
+    const removesAdmin = target.active && target.role === 'admin' &&
+      (active === false || role === 'viewer');
+    if (removesAdmin && userStore.countActiveAdmins() <= 1) {
+      return c.json({ error: 'At least one active administrator is required' }, 409);
+    }
+    if (target.id === principal.id && (active === false || role === 'viewer')) {
+      return c.json({ error: 'You cannot disable or demote your current account' }, 409);
+    }
+    try {
+      const user = userStore.update(target.id, {
+        ...(username ? { username } : {}),
+        ...(role ? { role } : {}),
+        ...(typeof active === 'boolean' ? { active } : {})
+      })!;
+      if (typeof password === 'string') {
+        userStore.setCredential(user.id, 'password', password);
+        sessionStore.invalidateUser(user.id);
+      }
+      if (typeof apiToken === 'string') {
+        userStore.setCredential(user.id, 'api_token', apiToken);
+      }
+      if (active === false) sessionStore.invalidateUser(user.id);
+      return c.json({ user: { ...publicUser(user), active: user.active } });
+    } catch (error) {
+      const response = accountError(error);
+      return c.json({ error: response.message }, response.status);
+    }
+  });
+
+  // Deletion is intentionally a reversible soft-disable so user-owned history
+  // and ACL configuration are not accidentally destroyed.
+  router.delete('/users/:id', (c) => {
+    const principal = adminForRequest(c);
+    if (principal instanceof Response) return principal;
+    const target = userStore.findById(c.req.param('id'));
+    if (!target) return c.json({ error: 'User not found' }, 404);
+    if (target.id === principal.id) return c.json({ error: 'You cannot disable your current account' }, 409);
+    if (target.active && target.role === 'admin' && userStore.countActiveAdmins() <= 1) {
+      return c.json({ error: 'At least one active administrator is required' }, 409);
+    }
+    const user = userStore.update(target.id, { active: false })!;
+    sessionStore.invalidateUser(user.id);
+    return c.json({ user: { ...publicUser(user), active: false } });
+  });
+
+  return router;
+}
+
+export const authRouter = createAuthRouter();

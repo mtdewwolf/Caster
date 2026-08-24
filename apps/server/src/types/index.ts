@@ -47,6 +47,12 @@ export interface MediaMetadata {
     language?: string;
   };
   streams: MediaStreamTrack[];
+  content_rating?: string;
+}
+
+export interface ContentRatingScope {
+  maxLevel: number | null;
+  allowUnrated: boolean;
 }
 
 export interface MediaItem {
@@ -77,6 +83,8 @@ export interface MediaItem {
   audio_language?: string;
   streams_json: string; // JSON of MediaStreamTrack[]
   poster_path?: string;
+  content_rating?: string;
+  content_rating_level?: number;
   created_at: string;
   updated_at: string;
   

@@ -189,6 +189,7 @@ async function processMediaFile(library: Library, filePath: string): Promise<voi
     audio_language: metadata?.audio?.language,
     streams_json: JSON.stringify(streams),
     poster_path: posterPath,
+    content_rating: metadata?.content_rating,
     created_at: now,
     updated_at: now
   };

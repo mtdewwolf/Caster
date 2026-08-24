@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import { ADMIN_USER_ID } from '../../auth';
+import { ADMIN_USER_ID } from '../../identity';
 
 export interface DatabaseMigration {
   version: number;
@@ -172,6 +172,117 @@ export function upgradeWatchProgressToUsersSchema(database: Database): void {
   `);
 }
 
+function createAuthSessionsSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token_hash TEXT PRIMARY KEY CHECK(length(token_hash) = 64),
+      user_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_used_at INTEGER NOT NULL
+    )
+  `);
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at
+      ON auth_sessions(expires_at)
+  `);
+}
+
+function createUsersSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL COLLATE NOCASE UNIQUE
+        CHECK(length(trim(username)) BETWEEN 1 AND 64),
+      role TEXT NOT NULL CHECK(role IN ('admin', 'viewer')),
+      active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  const now = new Date().toISOString();
+  database.run(`
+    INSERT INTO users (id, username, role, active, created_at, updated_at)
+    VALUES (?, 'admin', 'admin', 1, ?, ?)
+  `, [ADMIN_USER_ID, now, now]);
+
+  database.run(`
+    CREATE TABLE user_credentials (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK(type IN ('password', 'api_token')),
+      secret_hash TEXT NOT NULL CHECK(length(secret_hash) > 32),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(user_id, type)
+    )
+  `);
+
+  // Migration 4 predates users. Rebuild its table so all future sessions are
+  // tied to an account and are removed with it, while preserving valid legacy
+  // admin sessions during the upgrade.
+  database.run('ALTER TABLE auth_sessions RENAME TO auth_sessions_without_users');
+  database.run(`
+    CREATE TABLE auth_sessions (
+      token_hash TEXT PRIMARY KEY CHECK(length(token_hash) = 64),
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_used_at INTEGER NOT NULL
+    )
+  `);
+  database.run(`
+    INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at, last_used_at)
+    SELECT token_hash, user_id, created_at, expires_at, last_used_at
+    FROM auth_sessions_without_users
+    WHERE user_id = ?
+  `, [ADMIN_USER_ID]);
+  database.run('DROP TABLE auth_sessions_without_users');
+  database.run(`
+    CREATE INDEX idx_auth_sessions_expires_at ON auth_sessions(expires_at)
+  `);
+  database.run(`
+    CREATE INDEX idx_auth_sessions_user_id ON auth_sessions(user_id)
+  `);
+}
+
+function createUserLibraryPermissionsSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE user_library_access (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(user_id, library_id)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_user_library_access_library
+      ON user_library_access(library_id, user_id)
+  `);
+  database.run(`
+    CREATE TABLE user_permissions (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      max_content_rating TEXT,
+      allow_unrated INTEGER NOT NULL DEFAULT 1 CHECK(allow_unrated IN (0, 1)),
+      can_download INTEGER NOT NULL DEFAULT 0 CHECK(can_download IN (0, 1)),
+      can_stream_remote INTEGER NOT NULL DEFAULT 1 CHECK(can_stream_remote IN (0, 1)),
+      can_delete_media INTEGER NOT NULL DEFAULT 0 CHECK(can_delete_media IN (0, 1)),
+      can_manage_profiles INTEGER NOT NULL DEFAULT 0 CHECK(can_manage_profiles IN (0, 1)),
+      profile_pin_hash TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}
+
+function addMediaContentRatings(database: Database): void {
+  database.run('ALTER TABLE media_items ADD COLUMN content_rating TEXT');
+  database.run('ALTER TABLE media_items ADD COLUMN content_rating_level INTEGER');
+  database.run(`
+    CREATE INDEX idx_media_content_rating_level
+      ON media_items(content_rating_level)
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -187,6 +298,26 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 3,
     name: 'watch_progress_users',
     up: upgradeWatchProgressToUsersSchema
+  },
+  {
+    version: 4,
+    name: 'persistent_auth_sessions',
+    up: createAuthSessionsSchema
+  },
+  {
+    version: 5,
+    name: 'multi_user_accounts',
+    up: createUsersSchema
+  },
+  {
+    version: 6,
+    name: 'user_library_permissions',
+    up: createUserLibraryPermissionsSchema
+  },
+  {
+    version: 7,
+    name: 'media_content_ratings',
+    up: addMediaContentRatings
   }
 ];
 
