@@ -5,7 +5,7 @@ server. For deployment and network boundaries, see the
 [TrueNAS operations guide](TRUENAS_SCALE_SETUP.md).
 
 > Caster is designed for a trusted LAN or private overlay network. When any
-> account credential is configured, protected mode requires an active account
+> owner setup is complete, protected mode requires an active account
 > for catalog and playback routes. Filesystem, library/scan, account-access,
 > cache, hardware, and transcode administration require an administrator.
 > Direct public-Internet exposure is unsupported.
@@ -29,8 +29,8 @@ breaking. A versioned API and compatibility policy remain follow-up work.
 
 ## Access and authentication
 
-Protected mode is enabled whenever an active account has a password or API
-token. Catalog, progress, series, thumbnail, subtitle, direct-stream, and HLS
+Protected mode is enabled after the one-time owner setup creates the first
+credential. Catalog, progress, series, thumbnail, subtitle, direct-stream, and HLS
 routes then require an authenticated user. Per-user library allowlists are
 deny-by-default for viewers. Administrative reads and mutations require an
 administrator. Progress mutations are available to viewers for their own
@@ -43,23 +43,26 @@ history.
 | Login | No prior session is required; an active account credential is required in the JSON body. |
 | Admin | Requires an active administrator cookie or Bearer credential. |
 
-For a first boot, configure at least one of these server environment variables:
+On first boot, open Caster from the host's local/private network and submit the
+owner username and password to `POST /api/auth/setup`. The operation uses an
+immediate SQLite transaction, succeeds exactly once, stores only a salted
+password hash, and starts an authenticated owner session. Set
+`CASTER_SETUP_NETWORKS` to a narrow comma-separated IP/CIDR list only when the
+setup client is outside the built-in private ranges (for example,
+`100.64.0.0/10` for Tailscale).
 
-- `ADMIN_PASSWORD`: imported as a salted password hash for the initial admin.
-- `ADMIN_TOKEN`: imported as a one-way API-token hash for the initial admin.
-
-The raw values are not persisted. Additional named admin/viewer accounts can be
-managed through the API. If no credential exists, Caster permits anonymous
+After setup, administrators create expiring one-use invite links. The invite
+secret is returned once and only its SHA-256 digest is retained. The recipient
+chooses their own username and password when accepting it. If setup has not
+completed, Caster permits anonymous
 catalog and playback reads only over a direct loopback connection; this keeps
 local development usable without exposing a LAN listener. Administrative
 routes return `503`. In protected mode, missing or invalid authentication returns `401` with
 `WWW-Authenticate: Bearer`.
 
-Environment credentials are first-run bootstrap inputs, not parallel runtime
-credentials. Once imported, authentication checks only the stored hashes.
-Changing an account password or rotating its API token therefore makes a stale
-environment value invalid; update the environment secret as an operational
-follow-up so a future empty-database bootstrap uses the intended credential.
+Existing deployments that previously used `ADMIN_PASSWORD` or `ADMIN_TOKEN`
+are adopted during migration without persisting the raw environment values.
+New deployments should use browser-based owner setup.
 
 Account-free network access is a deliberate deployment choice:
 
@@ -97,8 +100,8 @@ because it contains the proxy.
 ### Cookie sessions
 
 `POST /api/auth/login` accepts `{"username":"...","password":"..."}` and
-creates the HTTP-only `caster_admin_session` cookie. Omitting `username` keeps
-the initial-admin login compatible. The cookie uses `SameSite=Strict`, lasts up
+creates the HTTP-only `caster_admin_session` cookie. Both fields are required;
+there is no hard-coded username fallback. The cookie uses `SameSite=Strict`, lasts up
 to 12 hours, and is marked `Secure` for HTTPS. Only a SHA-256 session-token
 digest is stored in SQLite, so sessions survive server restarts without storing
 the bearer secret.
@@ -117,7 +120,7 @@ CASTER_URL='http://192.0.2.10:3001'
 
 curl -sS -c ./caster.cookies \
   -H 'Content-Type: application/json' \
-  --data '{"password":"REPLACE_WITH_ADMIN_CREDENTIAL"}' \
+  --data '{"username":"REPLACE_WITH_USERNAME","password":"REPLACE_WITH_PASSWORD"}' \
   "$CASTER_URL/api/auth/login"
 
 curl -sS -b ./caster.cookies "$CASTER_URL/api/auth/session"
@@ -128,8 +131,8 @@ it when the session is no longer needed.
 
 ### Bearer authentication
 
-API clients should send the configured `ADMIN_TOKEN` without first calling the
-login route:
+API clients may send an API token assigned to an existing account without
+first calling the login route:
 
 ```sh
 curl -sS \
@@ -185,11 +188,17 @@ Common statuses include:
 | Method and path | Access | Input | Response |
 | --- | --- | --- | --- |
 | `GET /health` | Public | None | `{status, service, time}`. |
-| `GET /api/auth/session` | Public | Optional cookie or Bearer header | `{authenticated,configured,protectedMode,user?}`. |
-| `POST /api/auth/login` | Login | `{"username?":"...","password":"..."}` | Sets the session cookie and returns the authenticated public user. |
+| `GET /api/auth/session` | Public | Optional cookie or Bearer header | `{authenticated,configured,protectedMode,setupRequired,user?}`. |
+| `POST /api/auth/setup` | Public, local/setup network, once | `{"username":"...","password":"..."}` | Atomically creates the owner, permanently closes setup, and sets a session cookie. |
+| `POST /api/auth/login` | Login | `{"username":"...","password":"..."}` | Sets the session cookie and returns the authenticated public user. |
 | `POST /api/auth/logout` | Logout | Optional session cookie | Invalidates and clears the cookie, including a stale cookie, and returns `{authenticated:false}`. |
+| `POST /api/auth/invites/inspect` | Public | `{"token":"..."}` | Validates an unexpired, unused invite and returns its role and expiration. |
+| `POST /api/auth/signup` | Public, invited | `{"token":"...","username":"...","password":"..."}` | Atomically creates the invited account, consumes the invite, and sets a session cookie. |
 | `GET /api/auth/users` | Admin | None | Lists public account records and active states. |
-| `POST /api/auth/users` | Admin | `{username,password,role?}` | Creates a named admin or viewer. |
+| `GET /api/auth/invites` | Admin | None | Lists invite metadata and state; raw invite tokens are never returned. |
+| `POST /api/auth/invites` | Admin | `{role?,expiresInHours?}` | Creates an invite and returns its raw token exactly once. Expiration must be 1–720 hours. |
+| `DELETE /api/auth/invites/:id` | Admin | Invite ID | Revokes a pending invite. |
+| `POST /api/auth/users` | Admin | `{username,password,role?}` | Legacy authenticated account-creation API; interactive administration uses invites. |
 | `PATCH /api/auth/users/:id` | Admin | Optional `{username,password,apiToken,role,active}` fields | Updates an account. Password changes invalidate that user's sessions; API-token rotation immediately invalidates the old token. |
 | `DELETE /api/auth/users/:id` | Admin | User ID | Soft-disables the account. |
 | `POST /api/auth/profile/switch` | Cookie admin or permitted viewer | `{username,pin}` | Enters an active viewer profile, rate-limits failures per source session and target, and rotates the shared-browser session. Viewers require `canManageProfiles`; profile PINs never grant administrator access. |

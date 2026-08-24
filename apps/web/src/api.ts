@@ -7,6 +7,7 @@ export interface AuthSession {
   authenticated: boolean;
   configured: boolean;
   protectedMode: boolean;
+  setupRequired: boolean;
   user?: AuthUser;
 }
 
@@ -18,6 +19,20 @@ export interface AuthUser {
 
 export interface UserAccount extends AuthUser {
   active: boolean;
+}
+
+export interface AccountInvite {
+  id: string;
+  role: 'admin' | 'viewer';
+  createdAt: number;
+  expiresAt: number;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  acceptedUsername: string | null;
+}
+
+export interface CreatedAccountInvite extends AccountInvite {
+  token: string;
 }
 
 export interface UserPermissions {
@@ -73,7 +88,28 @@ export const api = {
   login(username: string, password: string): Promise<{ authenticated: true; user: AuthUser }> {
     return request('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ ...(username.trim() ? { username: username.trim() } : {}), password })
+      body: JSON.stringify({ username: username.trim(), password })
+    });
+  },
+
+  setupOwner(username: string, password: string): Promise<{ authenticated: true; user: AuthUser }> {
+    return request('/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username: username.trim(), password })
+    });
+  },
+
+  inspectInvite(token: string): Promise<{ role: 'admin' | 'viewer'; expiresAt: number }> {
+    return request<{ invite: { role: 'admin' | 'viewer'; expiresAt: number } }>('/auth/invites/inspect', {
+      method: 'POST',
+      body: JSON.stringify({ token })
+    }).then((data) => data.invite);
+  },
+
+  signup(token: string, username: string, password: string): Promise<{ authenticated: true; user: AuthUser }> {
+    return request('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ token, username: username.trim(), password })
     });
   },
 
@@ -93,16 +129,24 @@ export const api = {
     return data.users || [];
   },
 
-  async createUser(payload: {
-    username: string;
-    password: string;
+  async getInvites(): Promise<AccountInvite[]> {
+    const data = await request<{ invites: AccountInvite[] }>('/auth/invites');
+    return data.invites || [];
+  },
+
+  async createInvite(payload: {
     role: 'admin' | 'viewer';
-  }): Promise<UserAccount> {
-    const data = await request<{ user: UserAccount }>('/auth/users', {
+    expiresInHours: number;
+  }): Promise<CreatedAccountInvite> {
+    const data = await request<{ invite: CreatedAccountInvite }>('/auth/invites', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    return data.user;
+    return data.invite;
+  },
+
+  revokeInvite(id: string): Promise<{ revoked: true }> {
+    return request(`/auth/invites/${id}`, { method: 'DELETE' });
   },
 
   async updateUser(

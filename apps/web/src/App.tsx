@@ -14,6 +14,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { ProgressPage } from './components/ProgressPage';
 import { LoginModal } from './components/LoginModal';
 import { ProfileSwitchModal } from './components/ProfileSwitchModal';
+import { OwnerSetupModal } from './components/OwnerSetupModal';
+import { InviteSignupModal } from './components/InviteSignupModal';
 
 const MEDIA_PAGE_SIZE = 50;
 
@@ -42,6 +44,15 @@ export const App: React.FC = () => {
   const [showLogin, setShowLogin] = useState(false);
   const [openSettingsAfterLogin, setOpenSettingsAfterLogin] = useState(false);
   const [showProfileSwitch, setShowProfileSwitch] = useState(false);
+  const [inviteToken, setInviteToken] = useState(() => {
+    const match = window.location.hash.match(/^#invite=([^&]+)$/);
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return null;
+    }
+  });
   const isAuthenticated = authSession?.authenticated === true;
   const isAdmin = authSession?.user?.role === 'admin';
   const principalKey = authSession?.authenticated && authSession.user
@@ -157,7 +168,8 @@ export const App: React.FC = () => {
       setAuthSession((current) => ({
         authenticated: false,
         configured: current?.configured ?? true,
-        protectedMode: current?.protectedMode ?? true
+        protectedMode: current?.protectedMode ?? true,
+        setupRequired: current?.setupRequired ?? false
       }));
       setAuthSessionError(message);
       setShowLogin(false);
@@ -240,6 +252,7 @@ export const App: React.FC = () => {
       authenticated: true,
       configured: true,
       protectedMode: true,
+      setupRequired: false,
       user: response.user
     });
     setShowLogin(false);
@@ -254,7 +267,8 @@ export const App: React.FC = () => {
       applyAuthSession({
         authenticated: false,
         configured: authSession?.configured ?? true,
-        protectedMode: authSession?.protectedMode ?? true
+        protectedMode: authSession?.protectedMode ?? true,
+        setupRequired: authSession?.setupRequired ?? false
       });
     }
   };
@@ -265,6 +279,35 @@ export const App: React.FC = () => {
       authenticated: true,
       configured: authSession?.configured ?? true,
       protectedMode: authSession?.protectedMode ?? true,
+      setupRequired: authSession?.setupRequired ?? false,
+      user: response.user
+    });
+  };
+
+  const handleOwnerSetup = async (username: string, password: string) => {
+    const response = await api.setupOwner(username, password);
+    applyAuthSession({
+      authenticated: true,
+      configured: true,
+      protectedMode: true,
+      setupRequired: false,
+      user: response.user
+    });
+  };
+
+  const clearInvite = () => {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    setInviteToken(null);
+  };
+
+  const handleInviteSignup = async (token: string, username: string, password: string) => {
+    const response = await api.signup(token, username, password);
+    clearInvite();
+    applyAuthSession({
+      authenticated: true,
+      configured: true,
+      protectedMode: true,
+      setupRequired: false,
       user: response.user
     });
   };
@@ -301,6 +344,11 @@ export const App: React.FC = () => {
             <button type="button" onClick={() => void checkAuthSession()} className="mt-5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500">
               Try again
             </button>
+          </div>
+        ) : authSession?.setupRequired ? (
+          <div className="mx-auto mt-20 max-w-md rounded-2xl border border-white/10 bg-slate-900/60 p-8 text-center">
+            <h1 className="text-xl font-bold text-white">This Caster server needs an owner</h1>
+            <p className="mt-2 text-sm text-slate-400">Complete the one-time setup from the server host's local network.</p>
           </div>
         ) : authSession?.protectedMode && !isAuthenticated ? (
           <div className="mx-auto mt-20 max-w-md rounded-2xl border border-white/10 bg-slate-900/60 p-8 text-center">
@@ -575,7 +623,6 @@ export const App: React.FC = () => {
 
       {showLogin && (
         <LoginModal
-          configured={authSession?.configured ?? true}
           onClose={() => {
             setShowLogin(false);
             setOpenSettingsAfterLogin(false);
@@ -583,6 +630,12 @@ export const App: React.FC = () => {
           onLogin={handleLogin}
         />
       )}
+
+      {authSession?.setupRequired ? <OwnerSetupModal onSetup={handleOwnerSetup} /> : null}
+
+      {inviteToken && authSession && !authSession.setupRequired ? (
+        <InviteSignupModal token={inviteToken} onClose={clearInvite} onSignup={handleInviteSignup} />
+      ) : null}
 
       {showProfileSwitch && authSession?.user ? (
         <ProfileSwitchModal

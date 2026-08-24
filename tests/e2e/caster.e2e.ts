@@ -21,6 +21,7 @@ async function signInAsAdmin(page: Page, continueToSettings = false) {
 
   const dialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
   await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Username').fill('admin');
   await dialog.getByLabel('Password').fill(E2E_ADMIN_PASSWORD);
   await dialog.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -59,6 +60,7 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
 
   await page.getByTitle('Server Settings').click();
   const loginDialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
+  await loginDialog.getByLabel('Username').fill('admin');
   await loginDialog.getByLabel('Password').fill('incorrect-e2e-password');
   await loginDialog.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(loginDialog.getByRole('alert')).toHaveText('Invalid username or credential');

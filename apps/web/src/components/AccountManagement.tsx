@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Power, RefreshCw, UserPlus, Users } from 'lucide-react';
-import { api, type UserAccount, type UserPermissions } from '../api';
+import { Ban, ClipboardCopy, KeyRound, Link2, Power, RefreshCw, UserPlus, Users } from 'lucide-react';
+import { api, type AccountInvite, type UserAccount, type UserPermissions } from '../api';
 import type { Library } from '../types';
 
 interface AccessSettings {
@@ -11,10 +11,12 @@ interface AccessSettings {
 export const AccountManagement: React.FC = () => {
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [libraries, setLibraries] = useState<Library[]>([]);
+  const [invites, setInvites] = useState<AccountInvite[]>([]);
   const [accessSettings, setAccessSettings] = useState<Record<string, AccessSettings>>({});
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [role, setRole] = useState<'admin' | 'viewer'>('viewer');
+  const [expiresInHours, setExpiresInHours] = useState(168);
+  const [createdInviteLink, setCreatedInviteLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [passwordUpdates, setPasswordUpdates] = useState<Record<string, string>>({});
   const [pinUpdates, setPinUpdates] = useState<Record<string, string>>({});
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
@@ -34,12 +36,17 @@ export const AccountManagement: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [accounts, availableLibraries] = await Promise.all([api.getUsers(), api.getLibraries()]);
+      const [accounts, availableLibraries, accountInvites] = await Promise.all([
+        api.getUsers(),
+        api.getLibraries(),
+        api.getInvites()
+      ]);
       const settings = await Promise.all(accounts.map(async (account) => (
         [account.id, await loadAccess(account)] as const
       )));
       setUsers(accounts);
       setLibraries(availableLibraries);
+      setInvites(accountInvites);
       setAccessSettings(Object.fromEntries(settings));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load accounts');
@@ -52,28 +59,45 @@ export const AccountManagement: React.FC = () => {
     void loadAccounts();
   }, [loadAccounts]);
 
-  const createAccount = async (event: React.FormEvent) => {
+  const createInvite = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!username.trim() || !password || creating) return;
+    if (creating) return;
 
     setCreating(true);
     setError(null);
+    setCreatedInviteLink(null);
+    setCopied(false);
     try {
-      const user = await api.createUser({ username: username.trim(), password, role });
-      setUsers((current) => [...current, user].sort((left, right) => left.username.localeCompare(right.username)));
-      setUsername('');
-      setPassword('');
+      const invite = await api.createInvite({ role, expiresInHours });
+      setInvites((current) => [invite, ...current]);
+      setCreatedInviteLink(`${window.location.origin}${window.location.pathname}#invite=${encodeURIComponent(invite.token)}`);
       setRole('viewer');
-      try {
-        const access = await loadAccess(user);
-        setAccessSettings((current) => ({ ...current, [user.id]: access }));
-      } catch (caught) {
-        setError(`Account ${user.username} was created, but its access settings could not be loaded. Refresh accounts to continue.`);
-      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to create account');
+      setError(caught instanceof Error ? caught.message : 'Unable to create invite');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const copyInviteLink = async () => {
+    if (!createdInviteLink) return;
+    try {
+      await navigator.clipboard.writeText(createdInviteLink);
+      setCopied(true);
+    } catch {
+      setError('The invite was created, but the link could not be copied. Copy it from the field instead.');
+    }
+  };
+
+  const revokeInvite = async (invite: AccountInvite) => {
+    setError(null);
+    try {
+      await api.revokeInvite(invite.id);
+      setInvites((current) => current.map((item) => (
+        item.id === invite.id ? { ...item, revokedAt: Date.now() } : item
+      )));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to revoke invite');
     }
   };
 
@@ -170,38 +194,13 @@ export const AccountManagement: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <form data-testid="create-account-form" aria-labelledby="create-account-heading" onSubmit={createAccount} className="space-y-4 rounded-xl border border-white/5 bg-slate-950/60 p-4">
+      <form data-testid="create-invite-form" aria-labelledby="create-invite-heading" onSubmit={createInvite} className="space-y-4 rounded-xl border border-white/5 bg-slate-950/60 p-4">
         <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-200">
           <UserPlus className="h-4 w-4 text-blue-400" />
-          <span id="create-account-heading">Create account</span>
+          <span id="create-invite-heading">Invite account</span>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div>
-            <label htmlFor="new-account-username" className="mb-1 block text-[11px] font-medium text-slate-400">
-              Username
-            </label>
-            <input
-              id="new-account-username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              autoComplete="off"
-              className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="new-account-password" className="mb-1 block text-[11px] font-medium text-slate-400">
-              Initial password
-            </label>
-            <input
-              id="new-account-password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="new-password"
-              className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
-            />
-          </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label htmlFor="new-account-role" className="mb-1 block text-[11px] font-medium text-slate-400">
               Role
@@ -216,19 +215,74 @@ export const AccountManagement: React.FC = () => {
               <option value="admin">Administrator</option>
             </select>
           </div>
+          <div>
+            <label htmlFor="invite-expiration" className="mb-1 block text-[11px] font-medium text-slate-400">
+              Expires
+            </label>
+            <select
+              id="invite-expiration"
+              value={expiresInHours}
+              onChange={(event) => setExpiresInHours(Number(event.target.value))}
+              className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+            >
+              <option value={24}>24 hours</option>
+              <option value={168}>7 days</option>
+              <option value={720}>30 days</option>
+            </select>
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-4">
-          <p className="text-[11px] text-slate-500">Use at least 8 characters. Passwords are stored as salted hashes.</p>
+          <p className="text-[11px] text-slate-500">The recipient chooses their own username and password. Each link works once.</p>
           <button
             type="submit"
-            disabled={creating || !username.trim() || password.length < 8}
+            disabled={creating}
             className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {creating ? 'Creating…' : 'Create account'}
+            {creating ? 'Creating…' : 'Create invite'}
           </button>
         </div>
+        {createdInviteLink ? (
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-950/20 p-3">
+            <p className="mb-2 text-[11px] text-emerald-300">Copy this link now. Only its hash is stored, so it cannot be shown again.</p>
+            <div className="flex gap-2">
+              <input aria-label="New invite link" readOnly value={createdInviteLink} onFocus={(event) => event.currentTarget.select()} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-200" />
+              <button type="button" onClick={() => void copyInviteLink()} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/25 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-950/30">
+                <ClipboardCopy className="h-3.5 w-3.5" />
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </form>
+
+      {invites.length > 0 ? (
+        <section aria-labelledby="invites-heading" className="space-y-2 rounded-xl border border-white/5 bg-slate-950/40 p-4">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
+            <Link2 className="h-4 w-4 text-blue-400" />
+            <h3 id="invites-heading">Invite history</h3>
+          </div>
+          {invites.map((invite) => {
+            const pending = !invite.acceptedAt && !invite.revokedAt && invite.expiresAt > Date.now();
+            const status = invite.acceptedAt
+              ? `Used by ${invite.acceptedUsername ?? 'an account'}`
+              : invite.revokedAt ? 'Revoked' : invite.expiresAt <= Date.now() ? 'Expired' : 'Pending';
+            return (
+              <div key={invite.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/5 px-3 py-2 text-xs">
+                <div>
+                  <span className="font-medium capitalize text-slate-200">{invite.role}</span>
+                  <span className="ml-2 text-slate-500">{status} · expires {new Date(invite.expiresAt).toLocaleString()}</span>
+                </div>
+                {pending ? (
+                  <button type="button" onClick={() => void revokeInvite(invite)} className="flex items-center gap-1 text-rose-300 hover:text-rose-200">
+                    <Ban className="h-3.5 w-3.5" /> Revoke
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
 
       {error ? (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-rose-500/25 bg-rose-950/30 px-3 py-2 text-xs text-rose-300">

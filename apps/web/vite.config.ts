@@ -9,7 +9,15 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
-        changeOrigin: true
+        changeOrigin: true,
+        configure: (proxy) => {
+          // The browser is same-origin with Vite on :3000, but Caster receives
+          // the proxied request on :3001. Normalize only the development
+          // proxy's Origin header so backend CSRF checks see their own origin.
+          proxy.on('proxyReq', (proxyRequest) => {
+            proxyRequest.setHeader('Origin', 'http://localhost:3001');
+          });
+        }
       }
     }
   }
