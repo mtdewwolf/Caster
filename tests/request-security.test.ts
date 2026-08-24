@@ -237,6 +237,10 @@ describe('API request security', () => {
     expect(requestRequiresAdmin('POST', '/api/media/item/progress')).toBe(false);
     expect(requestRequiresAdmin('DELETE', '/api/media/item/progress')).toBe(false);
     expect(requestRequiresAdmin('DELETE', '/api/media/item/file')).toBe(false);
+    expect(requestRequiresAdmin('POST', '/api/playlists')).toBe(false);
+    expect(requestRequiresAdmin('PUT', '/api/playlists/owned/items/order')).toBe(false);
+    expect(requestRequiresAdmin('POST', '/api/watch-rooms/room/join')).toBe(false);
+    expect(requestRequiresAdmin('PUT', '/api/media/item/markers/intro')).toBe(true);
     expect(requestRequiresAdmin('DELETE', '/api/media/item')).toBe(true);
     expect(requestRequiresAdmin('POST', '/api/auth/login')).toBe(false);
   });

@@ -17,7 +17,8 @@ export default defineConfig({
           proxy.on('proxyReq', (proxyRequest) => {
             proxyRequest.setHeader('Origin', 'http://localhost:3001');
           });
-        }
+        },
+        ws: true
       }
     }
   }

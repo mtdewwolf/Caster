@@ -349,6 +349,101 @@ function allowProvisioningOwnerCleanup(database: Database): void {
   database.run('DROP TABLE server_setup_without_delete_action');
 }
 
+function addMusicTrackMetadata(database: Database): void {
+  database.run('ALTER TABLE media_items ADD COLUMN artist TEXT');
+  database.run('ALTER TABLE media_items ADD COLUMN album_artist TEXT');
+  database.run('ALTER TABLE media_items ADD COLUMN album TEXT');
+  database.run('ALTER TABLE media_items ADD COLUMN track_number INTEGER');
+  database.run('ALTER TABLE media_items ADD COLUMN disc_number INTEGER');
+  database.run('ALTER TABLE media_items ADD COLUMN genre TEXT');
+  database.run(`
+    CREATE INDEX idx_media_music_album
+      ON media_items(library_id, album_artist COLLATE NOCASE, album COLLATE NOCASE, year)
+  `);
+  database.run(`
+    CREATE INDEX idx_media_music_order
+      ON media_items(
+        library_id,
+        album_artist COLLATE NOCASE,
+        album COLLATE NOCASE,
+        disc_number,
+        track_number
+      )
+  `);
+}
+
+function createUserPlaylists(database: Database): void {
+  database.run(`
+    CREATE TABLE playlists (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL COLLATE NOCASE
+        CHECK(length(trim(name)) BETWEEN 1 AND 120),
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, name)
+    )
+  `);
+  database.run(`
+    CREATE TABLE playlist_items (
+      id TEXT PRIMARY KEY,
+      playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL CHECK(position >= 0),
+      added_at TEXT NOT NULL
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_playlists_user
+      ON playlists(user_id, updated_at DESC)
+  `);
+  database.run(`
+    CREATE INDEX idx_playlist_items_order
+      ON playlist_items(playlist_id, position, id)
+  `);
+}
+
+function createMediaMarkers(database: Database): void {
+  database.run(`
+    CREATE TABLE media_markers (
+      id TEXT PRIMARY KEY,
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      marker_type TEXT NOT NULL CHECK(marker_type IN ('intro', 'credits')),
+      start_seconds REAL,
+      end_seconds REAL,
+      state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'disabled')),
+      source TEXT NOT NULL,
+      confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1),
+      analyzer_version TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK(
+        state = 'disabled'
+        OR (
+          start_seconds IS NOT NULL AND start_seconds >= 0
+          AND end_seconds IS NOT NULL AND end_seconds > start_seconds
+        )
+      ),
+      UNIQUE(media_id, marker_type)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_media_markers_active_range
+      ON media_markers(media_id, state, start_seconds)
+  `);
+}
+
+function addStableMediaFingerprints(database: Database): void {
+  database.run('ALTER TABLE media_items ADD COLUMN content_fingerprint TEXT');
+  database.run(`
+    CREATE INDEX idx_media_content_fingerprint
+      ON media_items(library_id, content_fingerprint)
+      WHERE content_fingerprint IS NOT NULL
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -387,11 +482,31 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   },
   {
     version: 8,
+    name: 'music_track_metadata',
+    up: addMusicTrackMetadata
+  },
+  {
+    version: 9,
+    name: 'user_playlists',
+    up: createUserPlaylists
+  },
+  {
+    version: 10,
+    name: 'media_markers',
+    up: createMediaMarkers
+  },
+  {
+    version: 11,
+    name: 'stable_media_fingerprints',
+    up: addStableMediaFingerprints
+  },
+  {
+    version: 12,
     name: 'account_provisioning',
     up: createAccountProvisioningSchema
   },
   {
-    version: 9,
+    version: 13,
     name: 'provisioning_owner_delete_action',
     up: allowProvisioningOwnerCleanup
   }

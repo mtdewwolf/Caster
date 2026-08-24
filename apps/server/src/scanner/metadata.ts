@@ -196,7 +196,14 @@ export async function extractMediaMetadata(filePath: string): Promise<MediaMetad
           video: videoMeta,
           audio: audioMeta,
           streams,
-          content_rating: contentRating ?? undefined
+          content_rating: contentRating ?? undefined,
+          format_tags: Object.fromEntries(
+            Object.entries(formatTags)
+              .filter((entry): entry is [string, string | number] => (
+                typeof entry[1] === 'string' || typeof entry[1] === 'number'
+              ))
+              .map(([key, value]) => [key, String(value)])
+          )
         });
       } catch (err) {
         console.error('Error parsing ffprobe output:', err);
