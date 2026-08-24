@@ -17,10 +17,9 @@ services:
       - TRANSCODE_MAX_CONCURRENT=${TRANSCODE_MAX_CONCURRENT:-2}
       - TRANSCODE_CACHE_MAX_AGE_HOURS=${TRANSCODE_CACHE_MAX_AGE_HOURS:-24}
       - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
-      # Required: protects every POST/PUT/PATCH/DELETE API operation.
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting Caster}
-      # Optional for API clients: send this value as Authorization: Bearer <token>.
-      # - ADMIN_TOKEN=${ADMIN_TOKEN}
+      # Optional: exact IP/CIDR allowlist if first-run setup is performed
+      # outside the built-in LAN/private ranges.
+      # - CASTER_SETUP_NETWORKS=100.64.0.0/10
       # Set timezone matching your TrueNAS SCALE host
       - TZ=America/New_York
     volumes:

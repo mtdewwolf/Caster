@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
-import { AlertTriangle, LockKeyhole, ShieldCheck, X } from 'lucide-react';
+import { LockKeyhole, ShieldCheck, X } from 'lucide-react';
 
 interface LoginModalProps {
-  configured: boolean;
   onClose: () => void;
   onLogin: (username: string, credential: string) => Promise<void>;
 }
 
-export const LoginModal: React.FC<LoginModalProps> = ({ configured, onClose, onLogin }) => {
+export const LoginModal: React.FC<LoginModalProps> = ({ onClose, onLogin }) => {
   const [username, setUsername] = useState('');
   const [credential, setCredential] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -15,7 +14,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ configured, onClose, onL
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!credential || !configured || isSubmitting) return;
+    if (!username.trim() || !credential || isSubmitting) return;
 
     setError(null);
     setIsSubmitting(true);
@@ -59,65 +58,54 @@ export const LoginModal: React.FC<LoginModalProps> = ({ configured, onClose, onL
         </div>
 
         <form onSubmit={handleSubmit} aria-busy={isSubmitting} className="space-y-4 p-6">
-          {!configured ? (
-            <div className="flex gap-3 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-sm text-amber-200">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-              <p>
-                No administrator is configured. Set <code className="font-mono text-amber-100">ADMIN_PASSWORD</code>{' '}
-                on the server once to create the initial admin account.
-              </p>
+          <>
+            <div>
+              <label htmlFor="username" className="mb-1.5 block text-xs font-semibold text-slate-300">
+                Username
+              </label>
+              <input
+                id="username"
+                type="text"
+                autoFocus
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                placeholder="Enter your username"
+              />
             </div>
-          ) : (
-            <>
-              <div>
-                <label htmlFor="username" className="mb-1.5 block text-xs font-semibold text-slate-300">
-                  Username
-                </label>
-                <input
-                  id="username"
-                  type="text"
-                  autoFocus
-                  autoComplete="username"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  placeholder="admin"
-                />
-                <p className="mt-1 text-[11px] text-slate-500">Leave blank for a legacy admin login.</p>
+
+            <div>
+              <label htmlFor="admin-credential" className="mb-1.5 block text-xs font-semibold text-slate-300">
+                Password
+              </label>
+              <input
+                id="admin-credential"
+                type="password"
+                autoComplete="current-password"
+                value={credential}
+                aria-describedby={error ? 'login-error' : undefined}
+                onChange={(event) => setCredential(event.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                placeholder="Enter your password"
+              />
+            </div>
+
+            {error ? (
+              <div id="login-error" role="alert" className="rounded-lg border border-rose-500/25 bg-rose-950/30 px-3 py-2 text-xs text-rose-300">
+                {error}
               </div>
+            ) : null}
 
-              <div>
-                <label htmlFor="admin-credential" className="mb-1.5 block text-xs font-semibold text-slate-300">
-                  Password
-                </label>
-                <input
-                  id="admin-credential"
-                  type="password"
-                  autoComplete="current-password"
-                  value={credential}
-                  aria-describedby={error ? 'login-error' : undefined}
-                  onChange={(event) => setCredential(event.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  placeholder="Enter your password"
-                />
-              </div>
-
-              {error ? (
-                <div id="login-error" role="alert" className="rounded-lg border border-rose-500/25 bg-rose-950/30 px-3 py-2 text-xs text-rose-300">
-                  {error}
-                </div>
-              ) : null}
-
-              <button
-                type="submit"
-                disabled={!credential || isSubmitting}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <ShieldCheck className="h-4 w-4" />
-                <span>{isSubmitting ? 'Signing in...' : 'Sign in'}</span>
-              </button>
-            </>
-          )}
+            <button
+              type="submit"
+              disabled={!username.trim() || !credential || isSubmitting}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span>{isSubmitting ? 'Signing in...' : 'Sign in'}</span>
+            </button>
+          </>
         </form>
       </div>
     </div>

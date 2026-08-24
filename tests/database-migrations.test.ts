@@ -127,7 +127,8 @@ describe('database migrations', () => {
             'libraries', 'media_items', 'external_subtitles',
             'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
             'users', 'user_credentials', 'user_library_access', 'user_permissions',
-            'playlists', 'playlist_items', 'media_markers'
+            'server_setup', 'account_invites', 'playlists', 'playlist_items',
+            'media_markers'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -143,9 +144,12 @@ describe('database migrations', () => {
         { version: 8, name: 'music_track_metadata' },
         { version: 9, name: 'user_playlists' },
         { version: 10, name: 'media_markers' },
-        { version: 11, name: 'stable_media_fingerprints' }
+        { version: 11, name: 'stable_media_fingerprints' },
+        { version: 12, name: 'account_provisioning' },
+        { version: 13, name: 'provisioning_owner_delete_action' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
+        'account_invites',
         'auth_sessions',
         'external_subtitles',
         'libraries',
@@ -154,6 +158,7 @@ describe('database migrations', () => {
         'playlist_items',
         'playlists',
         'schema_migrations',
+        'server_setup',
         'settings',
         'user_credentials',
         'user_library_access',
@@ -227,7 +232,7 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 11 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 13 });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });

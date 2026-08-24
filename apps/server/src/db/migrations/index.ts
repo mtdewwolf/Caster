@@ -283,6 +283,72 @@ function addMediaContentRatings(database: Database): void {
   `);
 }
 
+function createAccountProvisioningSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE server_setup (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+      owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      completed_at TEXT
+    )
+  `);
+  database.run(`
+    INSERT INTO server_setup (singleton, owner_user_id, completed_at)
+    SELECT 1, users.id, ?
+    FROM users
+    WHERE users.role = 'admin'
+      AND EXISTS (
+        SELECT 1 FROM user_credentials WHERE user_credentials.user_id = users.id
+      )
+    ORDER BY CASE WHEN users.id = ? THEN 0 ELSE 1 END, users.created_at
+    LIMIT 1
+  `, [new Date().toISOString(), ADMIN_USER_ID]);
+  database.run(`
+    INSERT OR IGNORE INTO server_setup (singleton, owner_user_id, completed_at)
+    VALUES (1, NULL, NULL)
+  `);
+
+  database.run(`
+    CREATE TABLE account_invites (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash) = 64),
+      role TEXT NOT NULL CHECK(role IN ('admin', 'viewer')),
+      created_by TEXT NOT NULL REFERENCES users(id),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      accepted_at INTEGER,
+      accepted_user_id TEXT REFERENCES users(id),
+      revoked_at INTEGER,
+      CHECK(expires_at > created_at),
+      CHECK(accepted_at IS NULL OR revoked_at IS NULL)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_account_invites_expires_at
+      ON account_invites(expires_at)
+  `);
+  database.run(`
+    CREATE INDEX idx_account_invites_created_by
+      ON account_invites(created_by, created_at DESC)
+  `);
+}
+
+function allowProvisioningOwnerCleanup(database: Database): void {
+  database.run('ALTER TABLE server_setup RENAME TO server_setup_without_delete_action');
+  database.run(`
+    CREATE TABLE server_setup (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+      owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      completed_at TEXT
+    )
+  `);
+  database.run(`
+    INSERT INTO server_setup (singleton, owner_user_id, completed_at)
+    SELECT singleton, owner_user_id, completed_at
+    FROM server_setup_without_delete_action
+  `);
+  database.run('DROP TABLE server_setup_without_delete_action');
+}
+
 function addMusicTrackMetadata(database: Database): void {
   database.run('ALTER TABLE media_items ADD COLUMN artist TEXT');
   database.run('ALTER TABLE media_items ADD COLUMN album_artist TEXT');
@@ -433,6 +499,16 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 11,
     name: 'stable_media_fingerprints',
     up: addStableMediaFingerprints
+  },
+  {
+    version: 12,
+    name: 'account_provisioning',
+    up: createAccountProvisioningSchema
+  },
+  {
+    version: 13,
+    name: 'provisioning_owner_delete_action',
+    up: allowProvisioningOwnerCleanup
   }
 ];
 
