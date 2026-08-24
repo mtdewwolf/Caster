@@ -35,7 +35,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
 
   return (
     <div className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="relative w-full max-w-3xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden my-8">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="media-detail-title"
+        className="relative w-full max-w-3xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden my-8"
+      >
         {/* Header / Backdrop Image */}
         <div className="relative aspect-video max-h-72 w-full bg-slate-950 overflow-hidden">
           {item.poster_path ? (
@@ -47,7 +52,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
 
           {/* Close button */}
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close media details"
             className="absolute top-4 right-4 p-2 bg-black/60 hover:bg-black/80 text-slate-300 hover:text-white rounded-full transition-colors"
           >
             <X className="w-5 h-5" />
@@ -60,7 +67,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
                 {item.series_title}
               </div>
             )}
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            <h1 id="media-detail-title" className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               {item.title}
             </h1>
             <div className="flex flex-wrap items-center gap-2.5 mt-2 text-xs text-slate-300">
@@ -181,14 +188,16 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
             </div>
           </div>
 
-          {/* File Path */}
-          <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3 flex items-start gap-3 text-xs">
-            <HardDrive className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
-            <div className="overflow-hidden">
-              <div className="text-slate-400 font-medium mb-0.5">TrueNAS File Path:</div>
-              <div className="font-mono text-slate-300 truncate">{item.full_path}</div>
+          {/* The API deliberately omits absolute paths from viewer responses. */}
+          {item.full_path ? (
+            <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3 flex items-start gap-3 text-xs">
+              <HardDrive className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+              <div className="overflow-hidden">
+                <div className="text-slate-400 font-medium mb-0.5">TrueNAS File Path:</div>
+                <div className="font-mono text-slate-300 truncate">{item.full_path}</div>
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </div>
     </div>

@@ -6,6 +6,8 @@ import path from 'path';
 import { Hono } from 'hono';
 import { requireAdminForMutations } from '../apps/server/src/auth';
 import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
+import { db } from '../apps/server/src/db';
+import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
 import {
@@ -16,8 +18,8 @@ import {
 
 describe('scanner and playback route failures', () => {
   const app = new Hono();
+  const adminId = `playback-scanner-admin-${crypto.randomUUID()}`;
   const adminToken = `playback-scanner-token-${crypto.randomUUID()}`;
-  const originalAdminToken = process.env.ADMIN_TOKEN;
   const originalGetHlsSegment = transcoder.getHlsSegment;
   const originalScanStatus = {
     ...scanStatus,
@@ -58,8 +60,10 @@ describe('scanner and playback route failures', () => {
   }
 
   beforeAll(() => {
-    process.env.ADMIN_TOKEN = adminToken;
     initDatabase();
+    const users = new SqliteUserStore(db);
+    users.create(adminId, adminId, 'admin');
+    users.setCredential(adminId, 'api_token', adminToken);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-playback-scanner-'));
     scanRoot = path.join(fixtureRoot, 'empty-library');
@@ -138,9 +142,7 @@ describe('scanner and playback route failures', () => {
   afterAll(() => {
     if (scanLibraryId) LibraryModel.delete(scanLibraryId);
     if (playbackLibraryId) LibraryModel.delete(playbackLibraryId);
-
-    if (originalAdminToken === undefined) delete process.env.ADMIN_TOKEN;
-    else process.env.ADMIN_TOKEN = originalAdminToken;
+    db.run('DELETE FROM users WHERE id = ?', [adminId]);
 
     const expectedPrefix = path.join(os.tmpdir(), 'caster-playback-scanner-');
     if (fixtureRoot.startsWith(expectedPrefix)) {
@@ -207,7 +209,7 @@ describe('scanner and playback route failures', () => {
         throw new TranscodeCapacityError(4);
       },
       async () => {
-        const response = await app.request(
+        const response = await adminRequest(
           `/api/media/${mediaId}/hls/720p/segment-2.ts`
         );
 
@@ -227,7 +229,7 @@ describe('scanner and playback route failures', () => {
         throw new TranscodeKilledError();
       },
       async () => {
-        const response = await app.request(
+        const response = await adminRequest(
           `/api/media/${mediaId}/hls/480p/segment-1.ts`
         );
 
@@ -245,7 +247,7 @@ describe('scanner and playback route failures', () => {
         throw new Error('fixture transcoder failure');
       },
       async () => {
-        const response = await app.request(
+        const response = await adminRequest(
           `/api/media/${mediaId}/hls/360p/segment-0.ts`
         );
 
