@@ -2,6 +2,11 @@
 
 A high-performance, self-hosted personal media streaming platform to replace Plex on **TrueNAS SCALE**, accessible from any device over **Tailscale** with **GPU Hardware Acceleration** (Intel QuickSync, Linux VAAPI, NVIDIA NVENC).
 
+The web player can hand video to compatible network playback targets through
+the browser's native Cast/Remote Playback or AirPlay picker. The receiver must
+be able to reach the same Caster URL used in the browser; protected servers use
+short-lived, media-scoped playback grants automatically.
+
 ---
 
 ## ⚡ Quick Start

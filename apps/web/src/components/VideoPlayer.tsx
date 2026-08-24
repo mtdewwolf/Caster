@@ -12,19 +12,25 @@ import {
   Settings,
   Subtitles,
   ArrowLeft,
-  Tv,
+  Cast,
   Check,
   Users,
   Copy,
   LogOut
 } from 'lucide-react';
 import type { MediaItem, MediaStreamTrack, PlaybackDescriptor } from '../types';
-import { api } from '../api';
+import { api, type CastPlaybackAccess } from '../api';
 import type { WatchRoomLaunch } from '../features/watch-together/contracts';
 import { createWatchRoom, leaveWatchRoom } from '../features/watch-together/api';
 import { buildWatchRoomInviteUrl } from '../features/watch-together/invite-fragment';
 import { decideDriftCorrection } from '../features/watch-together/correction';
 import { useWatchRoom } from '../features/watch-together/use-watch-room';
+import {
+  promptForRemotePlayback,
+  supportsRemotePlayback,
+  type CastableVideoElement,
+  type CastConnectionState
+} from '../features/casting/remote-playback';
 
 interface VideoPlayerProps {
   item: MediaItem;
@@ -64,6 +70,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+  const [castPlayback, setCastPlayback] = useState<CastPlaybackAccess | null | undefined>(undefined);
+  const [castSupported, setCastSupported] = useState(false);
+  const [castAvailable, setCastAvailable] = useState(true);
+  const [castState, setCastState] = useState<CastConnectionState>('disconnected');
+  const [castMessage, setCastMessage] = useState<string | null>(null);
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverPos, setHoverPos] = useState<number>(0);
   const [playbackDescriptor, setPlaybackDescriptor] = useState<PlaybackDescriptor>({
@@ -106,10 +117,70 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, [item.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setCastPlayback(undefined);
+    api.getCastPlaybackAccess(item.id)
+      .then((access) => {
+        if (!cancelled) setCastPlayback(access);
+      })
+      .catch((error) => {
+        console.warn('Cast access unavailable:', error);
+        if (!cancelled) setCastPlayback(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
+  useEffect(() => {
+    const video = videoRef.current as CastableVideoElement | null;
+    if (!video) return;
+    video.disableRemotePlayback = false;
+    video.setAttribute('x-webkit-airplay', 'allow');
+    setCastSupported(supportsRemotePlayback(video));
+
+    const remote = video.remote;
+    let availabilityId: number | undefined;
+    if (remote) setCastState(remote.state);
+    const handleConnecting = () => setCastState('connecting');
+    const handleConnect = () => {
+      setCastState('connected');
+      setCastMessage('Playing on cast device');
+    };
+    const handleDisconnect = () => {
+      setCastState('disconnected');
+      setCastMessage(null);
+    };
+    const handleWebKitTarget = () => {
+      const connected = Boolean(video.webkitCurrentPlaybackTargetIsWireless);
+      setCastState(connected ? 'connected' : 'disconnected');
+      setCastMessage(connected ? 'Playing on AirPlay device' : null);
+    };
+
+    remote?.addEventListener('connecting', handleConnecting);
+    remote?.addEventListener('connect', handleConnect);
+    remote?.addEventListener('disconnect', handleDisconnect);
+    video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', handleWebKitTarget);
+    if (remote?.watchAvailability) {
+      void remote.watchAvailability((available) => setCastAvailable(available))
+        .then((id) => { availabilityId = id; })
+        .catch(() => setCastAvailable(true));
+    }
+
+    return () => {
+      remote?.removeEventListener('connecting', handleConnecting);
+      remote?.removeEventListener('connect', handleConnect);
+      remote?.removeEventListener('disconnect', handleDisconnect);
+      video.removeEventListener('webkitcurrentplaybacktargetiswirelesschanged', handleWebKitTarget);
+      if (availabilityId !== undefined) void remote?.cancelWatchAvailability?.(availabilityId);
+    };
+  }, []);
+
   // Initialize playback source
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || castPlayback === undefined) return;
 
     const initialSeek = item.progress && item.progress.position_seconds > 10 && !item.progress.completed
       ? item.progress.position_seconds
@@ -117,10 +188,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     if (streamMode === 'hls') {
       const hlsUrl = selectedQuality === 'auto'
-        ? `/api/media/${item.id}/hls/master.m3u8`
-        : `/api/media/${item.id}/hls/${selectedQuality}/index.m3u8`;
+        ? castPlayback?.hlsUrl ?? `/api/media/${item.id}/hls/master.m3u8`
+        : castPlayback?.hlsQualityUrls[selectedQuality] ?? `/api/media/${item.id}/hls/${selectedQuality}/index.m3u8`;
 
-      if (Hls.isSupported()) {
+      // Prefer the browser's native HLS pipeline when available. In Safari it
+      // keeps the real playlist URL visible to AirPlay instead of replacing it
+      // with an hls.js MediaSource blob.
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = hlsUrl;
+        if (initialSeek > 0) video.currentTime = initialSeek;
+        video.play().catch(() => setIsPlaying(false));
+      } else if (Hls.isSupported()) {
         if (hlsRef.current) {
           hlsRef.current.destroy();
         }
@@ -136,10 +214,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           if (initialSeek > 0) video.currentTime = initialSeek;
           video.play().catch(() => setIsPlaying(false));
         });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = hlsUrl;
-        if (initialSeek > 0) video.currentTime = initialSeek;
-        video.play().catch(() => setIsPlaying(false));
       }
     } else {
       // Direct Play Range stream
@@ -147,7 +221,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
-      video.src = `/api/media/${item.id}/stream`;
+      video.src = castPlayback?.directUrl ?? `/api/media/${item.id}/stream`;
       if (initialSeek > 0) {
         video.currentTime = initialSeek;
       }
@@ -160,7 +234,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         hlsRef.current = null;
       }
     };
-  }, [item.id, streamMode, selectedQuality]);
+  }, [item.id, streamMode, selectedQuality, castPlayback]);
 
   useEffect(() => {
     if (selectedAudio === null) return;
@@ -386,6 +460,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
+  const handleCast = () => {
+    const video = videoRef.current as CastableVideoElement | null;
+    if (!video) return;
+    if (!castPlayback) {
+      setCastMessage('Secure cast access is unavailable');
+      return;
+    }
+    setCastMessage(null);
+    // Keep this call in the click handler: browsers require a user gesture to
+    // show their native Cast/AirPlay device picker.
+    void promptForRemotePlayback(video).catch((error) => {
+      const name = error instanceof DOMException ? error.name : '';
+      if (name !== 'NotAllowedError') {
+        setCastMessage(error instanceof Error ? error.message : 'Unable to open the cast device picker');
+      }
+      setCastState('disconnected');
+    });
+  };
+
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -463,12 +556,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onClick={togglePlay}
         className={`w-full h-full object-contain ${canControlTimeline ? 'cursor-pointer' : 'cursor-default'}`}
         playsInline
+        disableRemotePlayback={false}
       >
         {selectedSubtitle !== null && (
           <track
             kind="subtitles"
             label="Subtitles"
-            src={`/api/media/${item.id}/subtitles/${selectedSubtitle}`}
+            src={`${castPlayback?.subtitleUrlBase ?? `/api/media/${item.id}/subtitles/`}${selectedSubtitle}${castPlayback?.query ?? ''}`}
             default
           />
         )}
@@ -549,6 +643,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           ) : null}
           {(watchAction || watchConnection.error) && (
             <span className="max-w-48 truncate text-amber-200">{watchConnection.error || watchAction}</span>
+          )}
+          {castMessage && (
+            <span className="max-w-56 truncate text-blue-200">{castMessage}</span>
           )}
         </div>
       </div>
@@ -656,6 +753,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           {/* Right Controls */}
           <div className="flex items-center gap-3 relative">
+            {castSupported && (
+              <button
+                type="button"
+                onClick={handleCast}
+                disabled={(castState === 'disconnected' && !castAvailable) || castPlayback === undefined}
+                className={`p-2 rounded-full hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40 transition-colors ${
+                  castState === 'connected' ? 'text-blue-400' : 'text-gray-300 hover:text-white'
+                }`}
+                title={castState === 'connected' ? 'Change or stop casting' : 'Cast to a device'}
+                aria-label={castState === 'connected' ? 'Change or stop casting' : 'Cast to a device'}
+              >
+                <Cast className={`w-5 h-5 ${castState === 'connecting' ? 'animate-pulse' : ''}`} />
+              </button>
+            )}
+
             {/* Subtitles Menu Toggle */}
             <div className="relative">
               <button

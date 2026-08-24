@@ -8,6 +8,7 @@ import { AccessControlStore } from './db/access-control';
 import { SqliteSessionStore, type SessionStore } from './db/session-store';
 import { SqliteUserStore, type UserRecord, type UserRole } from './db/user-store';
 import { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
+import { verifyCastAccessToken } from './security/cast-access';
 
 const SESSION_COOKIE = 'caster_admin_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
@@ -32,7 +33,7 @@ export interface AuthPrincipal {
   id: string;
   username: string;
   role: UserRole;
-  credential: 'cookie' | 'bearer';
+  credential: 'cookie' | 'bearer' | 'cast';
 }
 
 interface LoginAttempt {
@@ -151,18 +152,31 @@ export function resolvePrincipal(
   }
 
   const token = getCookie(c, SESSION_COOKIE);
-  if (!token) return null;
-  const now = Date.now();
-  maybePruneExpiredSessions(sessionStore, now);
-  const tokenHash = hashSessionToken(token);
-  const session = sessionStore.findValid(tokenHash, now);
-  if (!session) return null;
-  const user = userStore.findById(session.user_id);
-  if (!user?.active) {
-    sessionStore.invalidate(tokenHash);
-    return null;
+  if (token) {
+    const now = Date.now();
+    maybePruneExpiredSessions(sessionStore, now);
+    const tokenHash = hashSessionToken(token);
+    const session = sessionStore.findValid(tokenHash, now);
+    if (session) {
+      const user = userStore.findById(session.user_id);
+      if (!user?.active) {
+        sessionStore.invalidate(tokenHash);
+        return null;
+      }
+      return asPrincipal(user, 'cookie');
+    }
   }
-  return asPrincipal(user, 'cookie');
+
+  // Cast receivers cannot inherit the browser's cookie or Authorization
+  // header. A signed query grant is accepted only on playback derivatives for
+  // its single media item, and the owning account must still be active.
+  const castToken = c.req.query('cast');
+  const castAccess = castToken
+    ? verifyCastAccessToken(castToken, c.req.path)
+    : null;
+  if (!castAccess) return null;
+  const castUser = userStore.findById(castAccess.userId);
+  return castUser?.active ? asPrincipal(castUser, 'cast') : null;
 }
 
 export function getCurrentUserId(c: Context): string {
