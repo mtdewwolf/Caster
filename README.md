@@ -15,9 +15,6 @@ bun install
 ### 2. Local Development
 
 ```bash
-# Required for admin mutations and the login UI
-export ADMIN_PASSWORD='replace-with-a-long-password'
-
 # Start backend API & streaming engine (Port 3001)
 bun run dev:server
 
@@ -25,11 +22,14 @@ bun run dev:server
 bun run dev:web
 ```
 
-On PowerShell, set the password with `$env:ADMIN_PASSWORD = 'replace-with-a-long-password'`.
-When a credential is configured, browsing and streaming require an account;
+Open `http://localhost:3000` and complete the one-time owner setup. The chosen
+username and salted password hash are stored in the server's local
+`data/media.db`; the setup endpoint closes permanently after the first success.
+When setup is complete, browsing and streaming require an account;
 filesystem, library, scan, and system administration require an admin. API
-clients may set `ADMIN_TOKEN` and send it as a Bearer token. Cross-origin web
-clients must also list their exact origin in `CASTER_TRUSTED_ORIGINS`.
+tokens can be assigned to an existing account through the authenticated account
+API. Cross-origin web clients must also list their exact origin in
+`CASTER_TRUSTED_ORIGINS`.
 
 With no account credential, only a client connected directly from loopback can
 browse or play media. To deliberately run account-free on a private network,
@@ -79,11 +79,10 @@ See the detailed setup guides in `docs/`:
 
 ```bash
 cd docker
-export ADMIN_PASSWORD="replace-with-a-long-unique-password"
 docker compose up -d
 ```
 
-In PowerShell, set the same value with
-`$env:ADMIN_PASSWORD = "replace-with-a-long-unique-password"` before running
-Compose. The deployment intentionally refuses to start without admin
-credentials.
+Open `http://SERVER_IP:3001` from the host's LAN and claim the server. Accounts
+created afterward use owner-issued, expiring, one-use invite links. The data
+volume must remain persistent because it contains the database, credential
+hashes, invite records, and watch history.
