@@ -62,11 +62,11 @@ bun run build
 
 ### Native Android app
 
-The full Jetpack Compose client lives in [`apps/android`](apps/android). It
+The Jetpack Compose client is maintained in the standalone
+[Caster-Android repository](https://github.com/mtdewwolf/Caster-Android). It
 connects to Caster through the Android device's Tailscale tunnel and includes
 native browsing, search, Media3 playback, subtitles, progress sync, and server
-controls. See [`apps/android/README.md`](apps/android/README.md) for setup and
-build instructions.
+controls. See the Android repository for setup and build instructions.
 
 ---
 
