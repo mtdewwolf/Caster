@@ -211,7 +211,7 @@ export class HeartbeatClient {
     const signed = this.buildSignedHeartbeat();
     const body = JSON.stringify({ payload: signed.canonicalPayload, signature: signed.signature });
     const url = `${this.controlPlaneUrl.toString().replace(/\/$/, '')}/servers/heartbeat`;
-    let lastError = 'unknown failure';
+    let lastError: string | undefined = 'unknown failure';
     let lastStatus: number | undefined;
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
