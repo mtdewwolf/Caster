@@ -129,6 +129,44 @@ export const LibraryModel = {
   }
 };
 
+export type ScanGenerationStatus = 'discovering' | 'discovered' | 'completed' | 'failed';
+
+export const ScanGenerationModel = {
+  start: (id: string, libraryId: string): void => {
+    db.run(`
+      INSERT INTO library_scan_generations (id, library_id, status, started_at)
+      VALUES (?, ?, 'discovering', ?)
+    `, [id, libraryId, new Date().toISOString()]);
+  },
+
+  markDiscovered: (id: string): void => {
+    const result = db.run(`
+      UPDATE library_scan_generations
+      SET status = 'discovered', discovered_at = ?
+      WHERE id = ? AND status = 'discovering'
+    `, [new Date().toISOString(), id]);
+    if (result.changes !== 1) {
+      throw new Error(`Scan generation ${id} was not in the discovering state`);
+    }
+  },
+
+  markCompleted: (id: string, error: string | null): void => {
+    db.run(`
+      UPDATE library_scan_generations
+      SET status = 'completed', completed_at = ?, error = ?
+      WHERE id = ? AND status = 'discovered'
+    `, [new Date().toISOString(), error, id]);
+  },
+
+  markFailed: (id: string, error: string): void => {
+    db.run(`
+      UPDATE library_scan_generations
+      SET status = 'failed', completed_at = ?, error = ?
+      WHERE id = ? AND status IN ('discovering', 'discovered')
+    `, [new Date().toISOString(), error, id]);
+  }
+};
+
 export interface ExternalSubtitleRow {
   id: number;
   media_id: string;
@@ -361,7 +399,7 @@ export const MediaModel = {
         audio_channel_layout = excluded.audio_channel_layout,
         audio_language = excluded.audio_language,
         streams_json = excluded.streams_json,
-        poster_path = excluded.poster_path,
+        poster_path = COALESCE(excluded.poster_path, media_items.poster_path),
         content_rating = COALESCE(excluded.content_rating, media_items.content_rating),
         content_rating_level = COALESCE(excluded.content_rating_level, media_items.content_rating_level),
         artist = excluded.artist,
@@ -438,13 +476,61 @@ export const MediaModel = {
     db.run('DELETE FROM media_items WHERE id = ?', [id]);
   },
 
-  deleteNotFoundInPaths: (libraryId: string, currentFullPaths: string[]) => {
-    if (currentFullPaths.length === 0) {
-      db.run('DELETE FROM media_items WHERE library_id = ?', [libraryId]);
-      return;
+  stageDiscoveredPaths: (
+    libraryId: string,
+    scanGenerationId: string,
+    fullPaths: readonly string[]
+  ): void => {
+    if (fullPaths.length === 0) return;
+
+    const generation = db.query(`
+      SELECT id
+      FROM library_scan_generations
+      WHERE id = ? AND library_id = ? AND status = 'discovering'
+    `).get(scanGenerationId, libraryId);
+    if (!generation) {
+      throw new Error(`Scan generation ${scanGenerationId} is not available for staging`);
     }
-    const placeholders = currentFullPaths.map(() => '?').join(',');
-    db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
+
+    const statement = db.prepare(`
+      INSERT INTO library_scan_discoveries (
+        library_id, scan_generation_id, full_path, discovered_at
+      ) VALUES (?, ?, ?, ?)
+    `);
+    const discoveredAt = new Date().toISOString();
+    for (const fullPath of fullPaths) {
+      statement.run(libraryId, scanGenerationId, fullPath, discoveredAt);
+    }
+  },
+
+  reconcileLibraryScan: (libraryId: string, scanGenerationId: string): void => {
+    // Reconcile against paths discovered during the complete filesystem
+    // traversal. Processing errors never remove a staged path.
+    db.run(`
+      DELETE FROM media_items
+      WHERE library_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM library_scan_generations generation
+          WHERE generation.id = ?
+            AND generation.library_id = ?
+            AND generation.status = 'discovered'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM library_scan_discoveries discovered
+          WHERE discovered.library_id = ?
+            AND discovered.scan_generation_id = ?
+            AND discovered.full_path = media_items.full_path
+        )
+    `, [libraryId, scanGenerationId, libraryId, libraryId, scanGenerationId]);
+
+    // Retain only the latest generation's paths for diagnostics and bound the
+    // size of the discovery staging table.
+    db.run(`
+      DELETE FROM library_scan_discoveries
+      WHERE library_id = ? AND scan_generation_id != ?
+    `, [libraryId, scanGenerationId]);
   },
 
   getBySeries: (

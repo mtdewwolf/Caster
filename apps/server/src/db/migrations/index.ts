@@ -444,6 +444,37 @@ function addStableMediaFingerprints(database: Database): void {
   `);
 }
 
+function createScanDiscoverySchema(database: Database): void {
+  database.run(`
+    CREATE TABLE library_scan_generations (
+      id TEXT PRIMARY KEY,
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('discovering', 'discovered', 'completed', 'failed')),
+      started_at TEXT NOT NULL,
+      discovered_at TEXT,
+      completed_at TEXT,
+      error TEXT
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_library_scan_generations_library
+      ON library_scan_generations(library_id, started_at DESC)
+  `);
+  database.run(`
+    CREATE TABLE library_scan_discoveries (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      scan_generation_id TEXT NOT NULL REFERENCES library_scan_generations(id) ON DELETE CASCADE,
+      full_path TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (library_id, scan_generation_id, full_path)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_library_scan_discoveries_generation
+      ON library_scan_discoveries(library_id, scan_generation_id, full_path)
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -509,6 +540,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 13,
     name: 'stable_media_fingerprints',
     up: addStableMediaFingerprints
+  },
+  {
+    version: 14,
+    name: 'scan_discovery_generations',
+    up: createScanDiscoverySchema
   }
 ];
 

@@ -6,7 +6,13 @@ import { normalizeMusicTags } from './music-tags';
 import { contentFingerprint } from './content-fingerprint';
 import { EXTERNAL_SUBTITLE_INDEX_BASE, findExternalSubtitles } from './subtitles';
 import { ensureMediaThumbnail } from './thumbnails';
-import { db, ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
+import {
+  db,
+  ExternalSubtitleModel,
+  LibraryModel,
+  MediaModel,
+  ScanGenerationModel
+} from '../db';
 import { MediaIdentityStore } from '../db/media-identity-store';
 import { enqueueMediaMarkerAnalysis } from '../markers';
 import type { Library, MediaItem } from '../types';
@@ -33,6 +39,12 @@ export const scanStatus: ScanStatus = {
   errors: []
 };
 
+interface MediaDiscoveryResult {
+  files: string[];
+  complete: boolean;
+  errors: string[];
+}
+
 export async function scanAllLibraries(): Promise<void> {
   const libraries = LibraryModel.getAll();
   for (const lib of libraries) {
@@ -52,36 +64,83 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
 
   scanStatus.isScanning = true;
   scanStatus.libraryId = libraryId;
+  scanStatus.totalFiles = 0;
   scanStatus.processedFiles = 0;
+  scanStatus.currentFile = '';
   scanStatus.errors = [];
 
+  let scanGenerationId: string | null = null;
+  let generationStarted = false;
+
   try {
-    if (!fs.existsSync(library.path)) {
-      throw new Error(`Directory does not exist: ${library.path}`);
+    // The generation ID is shared by discovery, staging, processing, and
+    // reconciliation. A generation is never eligible for deletion until its
+    // filesystem traversal has completed successfully.
+    scanGenerationId = crypto.randomUUID();
+    ScanGenerationModel.start(scanGenerationId, library.id);
+    generationStarted = true;
+
+    const discovery = findMediaFiles(library.path, library.type);
+    scanStatus.totalFiles = discovery.files.length;
+    for (const error of discovery.errors) recordScanError(error);
+
+    if (!discovery.complete) {
+      markGenerationFailed(scanGenerationId, scanStatus.errors.join('\n') || 'Filesystem discovery was incomplete');
+      return {
+        processed: scanStatus.processedFiles,
+        errors: scanStatus.errors.length
+      };
     }
 
-    const files = findMediaFiles(library.path, library.type);
-    const currentLibraryPaths = new Set(files);
-    scanStatus.totalFiles = files.length;
+    const currentLibraryPaths = new Set(discovery.files);
 
-    const validFullPaths: string[] = [];
+    try {
+      // Stage paths before any metadata, thumbnail, or marker work. This is
+      // the boundary that distinguishes a file which exists from one whose
+      // processing happened to succeed.
+      MediaModel.stageDiscoveredPaths(library.id, scanGenerationId, discovery.files);
+      ScanGenerationModel.markDiscovered(scanGenerationId);
+    } catch (error) {
+      recordScanError(
+        `Error staging discovered paths for ${library.path}: ${errorMessage(error)}`,
+        error
+      );
+      markGenerationFailed(scanGenerationId, scanStatus.errors.join('\n'));
+      return {
+        processed: scanStatus.processedFiles,
+        errors: scanStatus.errors.length
+      };
+    }
 
-    for (const filePath of files) {
+    for (const filePath of discovery.files) {
       scanStatus.currentFile = path.basename(filePath);
       try {
-        await processMediaFile(library, filePath, currentLibraryPaths);
-        validFullPaths.push(filePath);
-      } catch (err: any) {
-        scanStatus.errors.push(`Error processing ${filePath}: ${err.message}`);
-        console.error(`Failed to process ${filePath}:`, err);
+        const warning = await processMediaFile(library, filePath, currentLibraryPaths);
+        if (warning) recordScanError(warning);
+      } catch (error) {
+        recordScanError(`Error processing ${filePath}: ${errorMessage(error)}`, error);
       }
       scanStatus.processedFiles++;
     }
 
-    // Remove deleted files
-    MediaModel.deleteNotFoundInPaths(library.id, validFullPaths);
+    // Reconcile only against a complete, staged filesystem generation. A
+    // metadata, ffprobe, thumbnail, or storage error above cannot remove its
+    // discovered media row or the records that reference it.
+    MediaModel.reconcileLibraryScan(library.id, scanGenerationId);
     LibraryModel.updateLastScanned(library.id);
+    ScanGenerationModel.markCompleted(scanGenerationId, scanStatus.errors.length > 0
+      ? scanStatus.errors.join('\n')
+      : null);
 
+    return {
+      processed: scanStatus.processedFiles,
+      errors: scanStatus.errors.length
+    };
+  } catch (error) {
+    recordScanError(`Library scan failed for ${library.path}: ${errorMessage(error)}`, error);
+    if (generationStarted && scanGenerationId) {
+      markGenerationFailed(scanGenerationId, scanStatus.errors.join('\n'));
+    }
     return {
       processed: scanStatus.processedFiles,
       errors: scanStatus.errors.length
@@ -92,44 +151,83 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
   }
 }
 
-function findMediaFiles(dirPath: string, libraryType: string): string[] {
+function findMediaFiles(dirPath: string, libraryType: Library['type']): MediaDiscoveryResult {
   const results: string[] = [];
+  const errors: string[] = [];
+  let complete = true;
+
+  if (!fs.existsSync(dirPath)) {
+    return {
+      files: results,
+      complete: false,
+      errors: [`Directory does not exist: ${dirPath}`]
+    };
+  }
 
   function walk(currentDir: string) {
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      complete = false;
+      errors.push(`Error discovering files in ${currentDir}: ${errorMessage(error)}`);
       return;
     }
 
     for (const entry of entries) {
-      const full = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        // Skip hidden and system folders
-        if (!entry.name.startsWith('.') && entry.name !== '@eaDir' && entry.name !== '$RECYCLE.BIN') {
-          walk(full);
+      try {
+        const full = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          // Skip hidden and system folders
+          if (!entry.name.startsWith('.') && entry.name !== '@eaDir' && entry.name !== '$RECYCLE.BIN') {
+            walk(full);
+          }
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (libraryType === 'music') {
+            if (AUDIO_EXTENSIONS.has(ext)) results.push(full);
+          } else {
+            if (VIDEO_EXTENSIONS.has(ext)) results.push(full);
+          }
         }
-      } else if (entry.isFile()) {
-        const ext = path.extname(entry.name).toLowerCase();
-        if (libraryType === 'music') {
-          if (AUDIO_EXTENSIONS.has(ext)) results.push(full);
-        } else {
-          if (VIDEO_EXTENSIONS.has(ext)) results.push(full);
-        }
+      } catch (error) {
+        complete = false;
+        errors.push(`Error discovering files in ${currentDir}: ${errorMessage(error)}`);
       }
     }
   }
 
   walk(dirPath);
-  return results;
+  results.sort();
+  return { files: results, complete, errors };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function recordScanError(message: string, error?: unknown): void {
+  scanStatus.errors.push(message);
+  if (error !== undefined) console.error(message, error);
+  else console.error(message);
+}
+
+function markGenerationFailed(scanGenerationId: string, error: string): void {
+  try {
+    ScanGenerationModel.markFailed(scanGenerationId, error || 'Library scan failed');
+  } catch (markError) {
+    recordScanError(
+      `Error recording failed scan generation ${scanGenerationId}: ${errorMessage(markError)}`,
+      markError
+    );
+  }
 }
 
 async function processMediaFile(
   library: Library,
   filePath: string,
   currentLibraryPaths: ReadonlySet<string>
-): Promise<void> {
+): Promise<string | undefined> {
   const filename = path.basename(filePath);
   const relativePath = path.relative(library.path, filePath);
   const stats = fs.statSync(filePath);
@@ -147,6 +245,9 @@ async function processMediaFile(
   const fileId = identity.id;
   const parsed = parseFilename(filename, library.type);
   const metadata = await extractMediaMetadata(filePath);
+  if (!metadata) {
+    throw new Error('Unable to refresh media metadata');
+  }
   const musicTags = parsed.type === 'track'
     ? normalizeMusicTags(metadata?.format_tags, {
         filePath,
@@ -236,5 +337,9 @@ async function processMediaFile(
       fullPath: mediaItem.full_path,
       duration: mediaItem.duration
     });
+  }
+
+  if (!thumbnail.ok && thumbnail.reason !== 'unsupported_media') {
+    return `Thumbnail processing failed for ${filePath}: ${thumbnail.reason || 'unknown error'}`;
   }
 }
