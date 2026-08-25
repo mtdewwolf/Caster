@@ -480,6 +480,15 @@ export const MediaModel = {
     `, [libraryId, scanGenerationId]);
   },
 
+  deleteNotFoundInPaths: (libraryId: string, currentFullPaths: string[]) => {
+    if (currentFullPaths.length === 0) {
+      db.run('DELETE FROM media_items WHERE library_id = ?', [libraryId]);
+      return;
+    }
+    const placeholders = currentFullPaths.map(() => '?').join(',');
+    db.run(`DELETE FROM media_items WHERE library_id = ? AND full_path NOT IN (${placeholders})`, [libraryId, ...currentFullPaths]);
+  },
+
   getBySeries: (
     libraryId: string,
     seriesTitle: string,
