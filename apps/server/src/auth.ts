@@ -61,8 +61,6 @@ const loginAttempts = new Map<string, LoginAttempt>();
 const profileSwitchAttempts = new Map<string, LoginAttempt>();
 const defaultSessionStore = new SqliteSessionStore(db);
 const defaultUserStore = new SqliteUserStore(db);
-const defaultAccessControlStore = new AccessControlStore(db);
-const defaultProvisioningStore = new AccountProvisioningStore(db);
 const defaultDeviceStore = new SqliteDeviceStore(db);
 const lastSessionPruneAt = new WeakMap<SessionStore, number>();
 const bootstrappedEnvironment = new WeakMap<SqliteUserStore, string>();
@@ -373,8 +371,8 @@ export function createAuthRouter(
   sessionStore: SessionStore = defaultSessionStore,
   userStore: SqliteUserStore = defaultUserStore,
   accessControlStore: Pick<AccessControlStore, 'verifyProfilePin' | 'canUseCapability'> =
-    defaultAccessControlStore,
-  provisioningStore: AccountProvisioningStore = defaultProvisioningStore,
+    new AccessControlStore(userStore.database),
+  provisioningStore: AccountProvisioningStore = new AccountProvisioningStore(userStore.database),
   options: AuthRouterOptions = {}
 ): Hono {
   const router = new Hono();
