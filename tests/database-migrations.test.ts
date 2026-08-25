@@ -141,12 +141,12 @@ describe('database migrations', () => {
         { version: 5, name: 'multi_user_accounts' },
         { version: 6, name: 'user_library_permissions' },
         { version: 7, name: 'media_content_ratings' },
-        { version: 8, name: 'music_track_metadata' },
-        { version: 9, name: 'user_playlists' },
-        { version: 10, name: 'media_markers' },
-        { version: 11, name: 'stable_media_fingerprints' },
-        { version: 12, name: 'account_provisioning' },
-        { version: 13, name: 'provisioning_owner_delete_action' }
+        { version: 8, name: 'account_provisioning' },
+        { version: 9, name: 'provisioning_owner_delete_action' },
+        { version: 10, name: 'music_track_metadata' },
+        { version: 11, name: 'user_playlists' },
+        { version: 12, name: 'media_markers' },
+        { version: 13, name: 'stable_media_fingerprints' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
@@ -236,6 +236,53 @@ describe('database migrations', () => {
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('repairs the temporary feature-before-account migration numbering', () => {
+    const database = new Database(':memory:');
+    const migrationByName = (name: string, version: number): DatabaseMigration => ({
+      ...DATABASE_MIGRATIONS.find((migration) => migration.name === name)!,
+      version
+    });
+    const temporarilyRenumberedMigrations: readonly DatabaseMigration[] = [
+      ...DATABASE_MIGRATIONS.slice(0, 7),
+      migrationByName('music_track_metadata', 8),
+      migrationByName('user_playlists', 9),
+      migrationByName('media_markers', 10),
+      migrationByName('stable_media_fingerprints', 11),
+      migrationByName('account_provisioning', 12),
+      migrationByName('provisioning_owner_delete_action', 13)
+    ];
+
+    try {
+      runDatabaseMigrations(database, temporarilyRenumberedMigrations);
+      expect(database.query(`
+        SELECT version, name FROM schema_migrations ORDER BY version
+      `).all()).toEqual([
+        { version: 1, name: 'initial_schema' },
+        { version: 2, name: 'external_subtitles' },
+        { version: 3, name: 'watch_progress_users' },
+        { version: 4, name: 'persistent_auth_sessions' },
+        { version: 5, name: 'multi_user_accounts' },
+        { version: 6, name: 'user_library_permissions' },
+        { version: 7, name: 'media_content_ratings' },
+        { version: 8, name: 'music_track_metadata' },
+        { version: 9, name: 'user_playlists' },
+        { version: 10, name: 'media_markers' },
+        { version: 11, name: 'stable_media_fingerprints' },
+        { version: 12, name: 'account_provisioning' },
+        { version: 13, name: 'provisioning_owner_delete_action' }
+      ]);
+
+      runDatabaseMigrations(database, DATABASE_MIGRATIONS);
+
+      expect(database.query(`
+        SELECT version, name FROM schema_migrations ORDER BY version
+      `).all()).toEqual(DATABASE_MIGRATIONS.map(({ version, name }) => ({ version, name })));
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
       database.close();

@@ -482,35 +482,106 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   },
   {
     version: 8,
-    name: 'music_track_metadata',
-    up: addMusicTrackMetadata
-  },
-  {
-    version: 9,
-    name: 'user_playlists',
-    up: createUserPlaylists
-  },
-  {
-    version: 10,
-    name: 'media_markers',
-    up: createMediaMarkers
-  },
-  {
-    version: 11,
-    name: 'stable_media_fingerprints',
-    up: addStableMediaFingerprints
-  },
-  {
-    version: 12,
     name: 'account_provisioning',
     up: createAccountProvisioningSchema
   },
   {
-    version: 13,
+    version: 9,
     name: 'provisioning_owner_delete_action',
     up: allowProvisioningOwnerCleanup
+  },
+  {
+    version: 10,
+    name: 'music_track_metadata',
+    up: addMusicTrackMetadata
+  },
+  {
+    version: 11,
+    name: 'user_playlists',
+    up: createUserPlaylists
+  },
+  {
+    version: 12,
+    name: 'media_markers',
+    up: createMediaMarkers
+  },
+  {
+    version: 13,
+    name: 'stable_media_fingerprints',
+    up: addStableMediaFingerprints
   }
 ];
+
+interface RenumberedMigration {
+  oldVersion: number;
+  canonicalVersion: number;
+  name: string;
+}
+
+// A short-lived merge inserted media migrations before the already-released
+// account migrations. Databases created during that window have the same
+// schema changes, but their names are attached to versions 8-13 in a
+// different order. Normalize that known history before validating it so those
+// databases remain bootable without rerunning destructive schema operations.
+const RENUMBERED_MIGRATION_HISTORY: readonly RenumberedMigration[] = [
+  { oldVersion: 8, canonicalVersion: 10, name: 'music_track_metadata' },
+  { oldVersion: 9, canonicalVersion: 11, name: 'user_playlists' },
+  { oldVersion: 10, canonicalVersion: 12, name: 'media_markers' },
+  { oldVersion: 11, canonicalVersion: 13, name: 'stable_media_fingerprints' },
+  { oldVersion: 12, canonicalVersion: 8, name: 'account_provisioning' },
+  { oldVersion: 13, canonicalVersion: 9, name: 'provisioning_owner_delete_action' }
+];
+
+function normalizeRenumberedMigrationHistory(database: Database): void {
+  const rows = database.query(`
+    SELECT version, name, applied_at FROM schema_migrations ORDER BY version
+  `).all() as Array<AppliedMigration & { applied_at: string }>;
+  const rowByVersion = new Map(rows.map((row) => [row.version, row]));
+
+  // The first moved migration is an unambiguous marker for the temporary
+  // numbering scheme. A normal database with the canonical history starts
+  // version 8 with account_provisioning instead.
+  if (rowByVersion.get(8)?.name !== 'music_track_metadata') return;
+
+  const rowsToMove = RENUMBERED_MIGRATION_HISTORY.filter((migration) => {
+    const row = rowByVersion.get(migration.oldVersion);
+    if (!row) return false;
+    if (row.name !== migration.name) {
+      throw new Error(
+        `Unsupported migration history at version ${migration.oldVersion}: ` +
+        `recorded "${row.name}", expected "${migration.name}"`
+      );
+    }
+    return true;
+  });
+  const oldVersionsToMove = new Set(rowsToMove.map((migration) => migration.oldVersion));
+
+  for (const migration of rowsToMove) {
+    const existingTarget = rowByVersion.get(migration.canonicalVersion);
+    if (existingTarget && !oldVersionsToMove.has(existingTarget.version)) {
+      throw new Error(
+        `Cannot normalize migration history: version ${migration.canonicalVersion} ` +
+        `is already recorded as "${existingTarget.name}"`
+      );
+    }
+  }
+
+  runInImmediateTransaction(database, () => {
+    database.run(`
+      UPDATE schema_migrations
+      SET version = version + 1000
+      WHERE version IN (${[...oldVersionsToMove].map(() => '?').join(',')})
+    `, [...oldVersionsToMove]);
+
+    for (const migration of rowsToMove) {
+      database.run(`
+        UPDATE schema_migrations
+        SET version = ?, name = ?
+        WHERE version = ?
+      `, [migration.canonicalVersion, migration.name, migration.oldVersion + 1000]);
+    }
+  });
+}
 
 function validateMigrations(migrations: readonly DatabaseMigration[]): void {
   let previousVersion = 0;
@@ -537,6 +608,8 @@ export function runDatabaseMigrations(
       applied_at TEXT NOT NULL
     )
   `);
+
+  normalizeRenumberedMigrationHistory(database);
 
   const appliedRows = database.query(`
     SELECT version, name FROM schema_migrations ORDER BY version
