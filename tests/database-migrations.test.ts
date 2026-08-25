@@ -146,7 +146,8 @@ describe('database migrations', () => {
         { version: 10, name: 'media_markers' },
         { version: 11, name: 'stable_media_fingerprints' },
         { version: 12, name: 'account_provisioning' },
-        { version: 13, name: 'provisioning_owner_delete_action' }
+        { version: 13, name: 'provisioning_owner_delete_action' },
+        { version: 14, name: 'device_identity_and_pairing' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
@@ -232,7 +233,7 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 13 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 14 });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });

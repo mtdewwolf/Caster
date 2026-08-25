@@ -6,6 +6,7 @@ import { getConnInfo } from 'hono/bun';
 import { db } from './db';
 import { AccessControlStore } from './db/access-control';
 import { AccountProvisioningStore } from './db/account-provisioning';
+import { SqliteDeviceStore, hashDeviceToken } from './db/device-store';
 import { SqliteSessionStore, type SessionStore } from './db/session-store';
 import { SqliteUserStore, type UserRecord, type UserRole } from './db/user-store';
 import { ADMIN_USER_ID, PUBLIC_USER_ID } from './identity';
@@ -42,7 +43,7 @@ export interface AuthPrincipal {
   id: string;
   username: string;
   role: UserRole;
-  credential: 'cookie' | 'bearer' | 'cast';
+  credential: 'cookie' | 'bearer' | 'cast' | 'device';
 }
 
 interface LoginAttempt {
@@ -62,6 +63,7 @@ const defaultSessionStore = new SqliteSessionStore(db);
 const defaultUserStore = new SqliteUserStore(db);
 const defaultAccessControlStore = new AccessControlStore(db);
 const defaultProvisioningStore = new AccountProvisioningStore(db);
+const defaultDeviceStore = new SqliteDeviceStore(db);
 const lastSessionPruneAt = new WeakMap<SessionStore, number>();
 const bootstrappedEnvironment = new WeakMap<SqliteUserStore, string>();
 
@@ -164,13 +166,23 @@ function asPrincipal(user: UserRecord, credential: AuthPrincipal['credential']):
 export function resolvePrincipal(
   c: Context,
   sessionStore: SessionStore = defaultSessionStore,
-  userStore: SqliteUserStore = defaultUserStore
+  userStore: SqliteUserStore = defaultUserStore,
+  deviceStore: SqliteDeviceStore = defaultDeviceStore
 ): AuthPrincipal | null {
   bootstrapLegacyAdmin(userStore);
   const bearer = bearerToken(c);
   if (bearer) {
     const user = userStore.findActiveByApiToken(bearer);
     if (user) return asPrincipal(user, 'bearer');
+
+    // Paired devices authenticate with their own scoped token; the credential
+    // never grants anything beyond the owning user's existing role, and only
+    // active, unrevoked devices resolve.
+    const device = deviceStore.findByDeviceToken(hashDeviceToken(bearer));
+    if (device) {
+      const owner = userStore.findById(device.user_id);
+      if (owner?.active) return asPrincipal(owner, 'device');
+    }
   }
 
   const token = getCookie(c, SESSION_COOKIE);
