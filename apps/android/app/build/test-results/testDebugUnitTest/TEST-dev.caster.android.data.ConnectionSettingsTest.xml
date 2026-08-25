@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="dev.caster.android.data.ConnectionSettingsTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-24T08:09:15.749Z" hostname="DESKTOP-NF2RAHV" time="0.182">
-  <properties/>
-  <testcase name="bare MagicDNS name gets http and Caster port" classname="dev.caster.android.data.ConnectionSettingsTest" time="0.179"/>
-  <testcase name="explicit Tailscale Serve URL is preserved" classname="dev.caster.android.data.ConnectionSettingsTest" time="0.0"/>
-  <testcase name="recognizes CGNAT tailnet range but not arbitrary public addresses" classname="dev.caster.android.data.ConnectionSettingsTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

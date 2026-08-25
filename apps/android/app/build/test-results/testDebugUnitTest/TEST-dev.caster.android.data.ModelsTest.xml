@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="dev.caster.android.data.ModelsTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-08-24T08:09:15.937Z" hostname="DESKTOP-NF2RAHV" time="0.194">
-  <properties/>
-  <testcase name="media response tolerates new server fields and parses progress" classname="dev.caster.android.data.ModelsTest" time="0.185"/>
-  <testcase name="subtitle tracks are extracted from serialized ffprobe streams" classname="dev.caster.android.data.ModelsTest" time="0.008"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

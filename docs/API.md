@@ -204,6 +204,39 @@ Common statuses include:
 | `DELETE /api/auth/users/:id` | Admin | User ID | Soft-disables the account. |
 | `POST /api/auth/profile/switch` | Cookie admin or permitted viewer | `{username,pin}` | Enters an active viewer profile, rate-limits failures per source session and target, and rotates the shared-browser session. Viewers require `canManageProfiles`; profile PINs never grant administrator access. |
 
+## Devices & Pairing
+
+Remote clients (Android TV, Fire TV, iOS, web, and similar) pair with the
+server through a one-time code instead of sharing an account password. A
+paired device receives its own scoped device token and authenticates with
+`Authorization: Bearer <deviceToken>`; the token carries only the owning
+user's role and never grants administrator access by itself.
+
+One-time-display semantics: pairing codes and device tokens are returned in
+the response body exactly once and are stored server-side only as SHA-256
+digests (`sha256$<hex>`). Neither can be retrieved again.
+
+| Method and path | Access | Input | Response |
+| --- | --- | --- | --- |
+| `GET /api/auth/devices` | Authenticated | Optional `?userId=` (admins only) | `{devices:[{id,name,platform,capabilities,createdAt,lastUsedAt,lastSeenAt,revokedAt,status}]}`. Revoked devices are hidden. |
+| `POST /api/auth/devices` | Authenticated | Optional `{name?,platform?}` as the proposed client identity | `201 {pairingCode,expiresAt}`. The 8-character code is valid for 10 minutes. |
+| `PATCH /api/auth/devices/:id` | Owner or admin | `{name}` | Renames the device and returns its public record. |
+| `DELETE /api/auth/devices/:id` | Owner or admin | None | Revokes the device immediately; its token stops resolving. |
+| `POST /api/auth/devices/redeem` | Public | `{"code":"ABCD2345","name":"Living Room TV","platform":"android-tv"}` | `{deviceId,deviceToken,userId}`. The token is a 32-byte base64url secret shown once. |
+
+Pairing security properties:
+
+- Codes use an unambiguous uppercase alphabet (no `0/O` or `1/I/L`) and expire
+  after 10 minutes.
+- A code is consumed atomically on first successful redemption; replayed,
+  expired, or deactivated codes are rejected with `400`/`409`.
+- Verification tolerates at most 5 failed attempts before outstanding codes
+  are invalidated; unmatched guesses count against every pending code.
+- The redeem endpoint is rate-limited to 10 attempts per 15 minutes per IP;
+  excess requests receive `429` with a `Retry-After` header.
+- Revocation takes effect on the next request using the device token, and
+  disabling the owning user also blocks resolution.
+
 ## Library grants, permissions, and profile PINs
 
 These routes are admin-only. Viewer library access is an explicit allowlist;

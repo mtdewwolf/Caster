@@ -10,6 +10,7 @@ import {
   isAuthConfigured,
   startSessionPruner
 } from './auth';
+import { devicesRouter } from './routes/devices';
 import {
   apiRequestSecurity,
   openModeIsExplicitlyEnabled
@@ -25,6 +26,7 @@ const app = new Hono();
 // local/open mode preserves account-free media browsing.
 app.use('/api/*', apiRequestSecurity);
 app.route('/api/auth', authRouter);
+app.route('/api/auth/devices', devicesRouter);
 
 // Mount API router
 app.route('/api', apiRouter);

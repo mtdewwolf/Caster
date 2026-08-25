@@ -444,6 +444,59 @@ function addStableMediaFingerprints(database: Database): void {
   `);
 }
 
+function createDevicePairingSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE devices (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      name TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      device_token_hash TEXT NOT NULL UNIQUE,
+      capabilities TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      last_seen_at INTEGER,
+      revoked_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'revoked'))
+    )
+  `);
+  database.run('CREATE INDEX idx_devices_user_id ON devices(user_id)');
+  database.run('CREATE INDEX idx_devices_token_hash ON devices(device_token_hash)');
+
+  database.run(`
+    CREATE TABLE pairing_codes (
+      id TEXT PRIMARY KEY,
+      code_hash TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      proposed_device_name TEXT,
+      proposed_platform TEXT,
+      expires_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      consumed_device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  database.run('CREATE INDEX idx_pairing_codes_code_hash ON pairing_codes(code_hash)');
+  database.run('CREATE INDEX idx_pairing_codes_expires_at ON pairing_codes(expires_at)');
+}
+
+function createScanDiscoverySchema(database: Database): void {
+  database.run(`
+    CREATE TABLE library_scan_discoveries (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      scan_generation_id TEXT NOT NULL,
+      full_path TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (library_id, scan_generation_id, full_path)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_library_scan_discoveries_generation
+      ON library_scan_discoveries(library_id, scan_generation_id, full_path)
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -509,6 +562,16 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 13,
     name: 'provisioning_owner_delete_action',
     up: allowProvisioningOwnerCleanup
+  },
+  {
+    version: 14,
+    name: 'device_identity_and_pairing',
+    up: createDevicePairingSchema
+  },
+  {
+    version: 15,
+    name: 'scan_discovery_generations',
+    up: createScanDiscoverySchema
   }
 ];
 

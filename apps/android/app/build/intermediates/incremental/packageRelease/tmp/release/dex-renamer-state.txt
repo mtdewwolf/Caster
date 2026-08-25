@@ -1,4 +1,0 @@
-#Mon Aug 24 02:12:31 MDT 2026
-base.0=C\:\\Users\\user\\.t3\\worktrees\\Caster\\t3code-ac376a9f\\apps\\android\\app\\build\\intermediates\\dex\\release\\minifyReleaseWithR8\\classes.dex
-renamed.0=classes.dex
-path.0=classes.dex
