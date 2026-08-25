@@ -438,6 +438,48 @@ export const MediaModel = {
     db.run('DELETE FROM media_items WHERE id = ?', [id]);
   },
 
+  stageDiscoveredPaths: (
+    libraryId: string,
+    scanGenerationId: string,
+    fullPaths: readonly string[]
+  ): void => {
+    if (fullPaths.length === 0) return;
+
+    const statement = db.prepare(`
+      INSERT OR IGNORE INTO library_scan_discoveries (
+        library_id, scan_generation_id, full_path, discovered_at
+      ) VALUES (?, ?, ?, ?)
+    `);
+    const discoveredAt = new Date().toISOString();
+    for (const fullPath of fullPaths) {
+      statement.run(libraryId, scanGenerationId, fullPath, discoveredAt);
+    }
+  },
+
+  reconcileLibraryScan: (libraryId: string, scanGenerationId: string): void => {
+    // Reconcile against paths discovered during the filesystem traversal. A
+    // processing failure cannot remove a path from this generation because
+    // staging happens before processMediaFile is called.
+    db.run(`
+      DELETE FROM media_items
+      WHERE library_id = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM library_scan_discoveries discovered
+          WHERE discovered.library_id = ?
+            AND discovered.scan_generation_id = ?
+            AND discovered.full_path = media_items.full_path
+        )
+    `, [libraryId, libraryId, scanGenerationId]);
+
+    // Keep the most recent generation for diagnostics while preventing the
+    // discovery table from growing without bound.
+    db.run(`
+      DELETE FROM library_scan_discoveries
+      WHERE library_id = ? AND scan_generation_id != ?
+    `, [libraryId, scanGenerationId]);
+  },
+
   deleteNotFoundInPaths: (libraryId: string, currentFullPaths: string[]) => {
     if (currentFullPaths.length === 0) {
       db.run('DELETE FROM media_items WHERE library_id = ?', [libraryId]);

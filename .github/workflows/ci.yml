@@ -21,6 +21,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Reject tracked generated and local-data artifacts
+        run: bash scripts/check-tracked-artifacts.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
