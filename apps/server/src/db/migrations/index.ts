@@ -481,6 +481,22 @@ function createDevicePairingSchema(database: Database): void {
   database.run('CREATE INDEX idx_pairing_codes_expires_at ON pairing_codes(expires_at)');
 }
 
+function createScanDiscoverySchema(database: Database): void {
+  database.run(`
+    CREATE TABLE library_scan_discoveries (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      scan_generation_id TEXT NOT NULL,
+      full_path TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (library_id, scan_generation_id, full_path)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_library_scan_discoveries_generation
+      ON library_scan_discoveries(library_id, scan_generation_id, full_path)
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -551,6 +567,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 14,
     name: 'device_identity_and_pairing',
     up: createDevicePairingSchema
+  },
+  {
+    version: 15,
+    name: 'scan_discovery_generations',
+    up: createScanDiscoverySchema
   }
 ];
 

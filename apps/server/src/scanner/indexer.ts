@@ -33,6 +33,12 @@ export const scanStatus: ScanStatus = {
   errors: []
 };
 
+interface MediaDiscoveryResult {
+  files: string[];
+  complete: boolean;
+  errors: string[];
+}
+
 export async function scanAllLibraries(): Promise<void> {
   const libraries = LibraryModel.getAll();
   for (const lib of libraries) {
@@ -52,36 +58,60 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
 
   scanStatus.isScanning = true;
   scanStatus.libraryId = libraryId;
+  scanStatus.totalFiles = 0;
   scanStatus.processedFiles = 0;
+  scanStatus.currentFile = '';
   scanStatus.errors = [];
 
   try {
-    if (!fs.existsSync(library.path)) {
-      throw new Error(`Directory does not exist: ${library.path}`);
+    // A generation identifies one filesystem snapshot. It is deliberately
+    // created before discovery so every stage of this scan uses the same ID.
+    const scanGenerationId = crypto.randomUUID();
+    const discovery = findMediaFiles(library.path, library.type);
+    const currentLibraryPaths = new Set(discovery.files);
+    scanStatus.totalFiles = discovery.files.length;
+
+    for (const error of discovery.errors) {
+      recordScanError(error);
     }
 
-    const files = findMediaFiles(library.path, library.type);
-    const currentLibraryPaths = new Set(files);
-    scanStatus.totalFiles = files.length;
+    let staged = false;
+    try {
+      // Stage the filesystem result before any metadata, thumbnail, or marker
+      // work. Reconciliation can therefore distinguish an undiscovered path
+      // from a discovered path whose processing failed later.
+      MediaModel.stageDiscoveredPaths(library.id, scanGenerationId, discovery.files);
+      staged = true;
+    } catch (error) {
+      recordScanError(`Error staging discovered paths for ${library.path}: ${errorMessage(error)}`, error);
+    }
 
-    const validFullPaths: string[] = [];
-
-    for (const filePath of files) {
-      scanStatus.currentFile = path.basename(filePath);
-      try {
-        await processMediaFile(library, filePath, currentLibraryPaths);
-        validFullPaths.push(filePath);
-      } catch (err: any) {
-        scanStatus.errors.push(`Error processing ${filePath}: ${err.message}`);
-        console.error(`Failed to process ${filePath}:`, err);
+    if (staged) {
+      for (const filePath of discovery.files) {
+        scanStatus.currentFile = path.basename(filePath);
+        try {
+          await processMediaFile(library, filePath, currentLibraryPaths);
+        } catch (error) {
+          recordScanError(`Error processing ${filePath}: ${errorMessage(error)}`, error);
+        }
+        scanStatus.processedFiles++;
       }
-      scanStatus.processedFiles++;
     }
 
-    // Remove deleted files
-    MediaModel.deleteNotFoundInPaths(library.id, validFullPaths);
-    LibraryModel.updateLastScanned(library.id);
+    // A partial traversal is not a filesystem snapshot. Never reconcile from
+    // it, because an unreadable directory could contain all of the media that
+    // would otherwise be mistaken for deleted files.
+    if (discovery.complete && staged) {
+      MediaModel.reconcileLibraryScan(library.id, scanGenerationId);
+      LibraryModel.updateLastScanned(library.id);
+    }
 
+    return {
+      processed: scanStatus.processedFiles,
+      errors: scanStatus.errors.length
+    };
+  } catch (error) {
+    recordScanError(`Library scan failed for ${library.path}: ${errorMessage(error)}`, error);
     return {
       processed: scanStatus.processedFiles,
       errors: scanStatus.errors.length
@@ -92,14 +122,18 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
   }
 }
 
-function findMediaFiles(dirPath: string, libraryType: string): string[] {
+function findMediaFiles(dirPath: string, libraryType: Library['type']): MediaDiscoveryResult {
   const results: string[] = [];
+  const errors: string[] = [];
+  let complete = true;
 
   function walk(currentDir: string) {
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      complete = false;
+      errors.push(`Error discovering files in ${currentDir}: ${errorMessage(error)}`);
       return;
     }
 
@@ -122,7 +156,21 @@ function findMediaFiles(dirPath: string, libraryType: string): string[] {
   }
 
   walk(dirPath);
-  return results;
+  results.sort();
+  return { files: results, complete, errors };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function recordScanError(message: string, error?: unknown): void {
+  scanStatus.errors.push(message);
+  if (error !== undefined) {
+    console.error(message, error);
+  } else {
+    console.error(message);
+  }
 }
 
 async function processMediaFile(

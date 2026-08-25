@@ -13,3 +13,18 @@ dist/
 local.properties
 *.apk
 *.aab
+*.aar
+*.apks
+*.hprof
+*.dex
+*.class
+
+# Runtime databases and SQLite sidecars
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

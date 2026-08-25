@@ -94,7 +94,7 @@ describe('device identity and pairing', () => {
   });
 
   it('applies the v14 device_identity_and_pairing migration cleanly', () => {
-    expect(DATABASE_MIGRATIONS.at(-1)).toMatchObject({
+    expect(DATABASE_MIGRATIONS.find(({ name }) => name === 'device_identity_and_pairing')).toMatchObject({
       version: 14,
       name: 'device_identity_and_pairing'
     });

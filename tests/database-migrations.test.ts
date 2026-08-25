@@ -128,7 +128,7 @@ describe('database migrations', () => {
             'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
             'users', 'user_credentials', 'user_library_access', 'user_permissions',
             'server_setup', 'account_invites', 'playlists', 'playlist_items',
-            'media_markers'
+            'media_markers', 'library_scan_discoveries', 'devices', 'pairing_codes'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -147,15 +147,19 @@ describe('database migrations', () => {
         { version: 11, name: 'stable_media_fingerprints' },
         { version: 12, name: 'account_provisioning' },
         { version: 13, name: 'provisioning_owner_delete_action' },
-        { version: 14, name: 'device_identity_and_pairing' }
+        { version: 14, name: 'device_identity_and_pairing' },
+        { version: 15, name: 'scan_discovery_generations' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
         'auth_sessions',
+        'devices',
         'external_subtitles',
         'libraries',
+        'library_scan_discoveries',
         'media_items',
         'media_markers',
+        'pairing_codes',
         'playlist_items',
         'playlists',
         'schema_migrations',
@@ -233,7 +237,7 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 14 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 15 });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });
