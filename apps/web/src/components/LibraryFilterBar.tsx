@@ -62,10 +62,10 @@ interface FieldProps {
 
 function Field({ label, children }: FieldProps) {
   return (
-    <label className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5">
       <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
