@@ -12,9 +12,8 @@ export interface MetadataRouterDependencies {
   store: MetadataStore;
   enrichment: MetadataEnrichmentService;
   registry: MetadataProviderRegistry;
-  /** Must return null unless the current principal may see this item. */
+  /** Returns null when the requested media item does not exist. */
   resolveMedia: (context: Context, mediaId: string) => MaybePromise<MediaItem | null>;
-  isAdmin: (context: Context) => MaybePromise<boolean>;
 }
 
 /** Shapes stored metadata for clients. Credits are trimmed to a usable slice. */
@@ -68,12 +67,9 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
     return dependencies.resolveMedia(context, mediaId);
   }
 
-  async function requireAdminMedia(
+  async function requireEditableMedia(
     context: Context
   ): Promise<{ media: MediaItem } | { response: Response }> {
-    if (!await dependencies.isAdmin(context)) {
-      return { response: context.json({ error: 'Administrator access required' }, 403) };
-    }
     const media = await requireMedia(context);
     if (!media) return { response: context.json({ error: 'Media not found' }, 404) };
     return { media };
@@ -97,7 +93,7 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
   });
 
   router.get('/:id/metadata/candidates', async (context) => {
-    const outcome = await requireAdminMedia(context);
+    const outcome = await requireEditableMedia(context);
     if ('response' in outcome) return outcome.response;
 
     try {
@@ -119,7 +115,7 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
   // Fix Match. The chosen candidate is stored as a manual override and locked,
   // so a later automatic refresh cannot quietly undo the correction.
   router.post('/:id/metadata/match', async (context) => {
-    const outcome = await requireAdminMedia(context);
+    const outcome = await requireEditableMedia(context);
     if ('response' in outcome) return outcome.response;
 
     const body = await readJsonObject(context);
@@ -160,7 +156,7 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
   });
 
   router.post('/:id/metadata/refresh', async (context) => {
-    const outcome = await requireAdminMedia(context);
+    const outcome = await requireEditableMedia(context);
     if ('response' in outcome) return outcome.response;
 
     // A refresh is an explicit instruction, so it overrides both the repeat
@@ -177,7 +173,7 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
   });
 
   router.delete('/:id/metadata', async (context) => {
-    const outcome = await requireAdminMedia(context);
+    const outcome = await requireEditableMedia(context);
     if ('response' in outcome) return outcome.response;
 
     const plan = planMetadataMatch(outcome.media);
@@ -192,14 +188,10 @@ export function createMetadataRouter(dependencies: MetadataRouterDependencies): 
 export function createMetadataProvidersRouter(dependencies: {
   registry: MetadataProviderRegistry;
   artworkCache?: ArtworkCache;
-  isAdmin: (context: Context) => MaybePromise<boolean>;
 }): Hono {
   const router = new Hono();
 
   router.get('/artwork', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     if (!dependencies.artworkCache) {
       return context.json({ error: 'Artwork caching is not configured' }, 409);
     }
@@ -209,9 +201,6 @@ export function createMetadataProvidersRouter(dependencies: {
   // Clearing forgets the local copies only. Every row keeps its provider URL,
   // so the library still shows artwork and can re-cache on the next refresh.
   router.delete('/artwork', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     if (!dependencies.artworkCache) {
       return context.json({ error: 'Artwork caching is not configured' }, 409);
     }
@@ -221,9 +210,6 @@ export function createMetadataProvidersRouter(dependencies: {
   });
 
   router.get('/providers', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     return context.json({
       providers: dependencies.registry.list().map((provider) => ({
         id: provider.id,

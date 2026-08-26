@@ -1,6 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
-  E2E_ADMIN_PASSWORD,
   HARBOR_TITLE,
   MOONRISE_MEDIA_ID,
   MOONRISE_TITLE,
@@ -14,18 +13,6 @@ async function openCaster(page: Page) {
   await page.goto('/');
   await expect(page.getByTitle('Server Settings')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Movies', exact: true })).toBeVisible();
-}
-
-async function signInAsAdmin(page: Page, continueToSettings = false) {
-  await page.getByTitle(continueToSettings ? 'Server Settings' : 'Sign in to Caster').click();
-
-  const dialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel('Username').fill('admin');
-  await dialog.getByLabel('Password').fill(E2E_ADMIN_PASSWORD);
-  await dialog.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.getByTitle('Sign out admin')).toBeVisible();
 }
 
 async function fetchFromPage(
@@ -43,11 +30,11 @@ async function fetchFromPage(
   }, request);
 }
 
-test('gates admin mutations, signs in, and changes a library setting', async ({ page }) => {
+test('changes a library setting without account setup', async ({ page }) => {
   await openCaster(page);
 
   const emptyLibraryDirectory = getE2ERuntimePaths().emptyLibraryDir;
-  const blockedMutation = await fetchFromPage(page, {
+  const mutation = await fetchFromPage(page, {
     path: '/api/libraries',
     method: 'POST',
     body: {
@@ -56,18 +43,8 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
       type: 'movies'
     }
   });
-  expect(blockedMutation.status).toBe(401);
-
+  expect(mutation.status).not.toBe(401);
   await page.getByTitle('Server Settings').click();
-  const loginDialog = page.getByRole('dialog', { name: 'Sign in to Caster' });
-  await loginDialog.getByLabel('Username').fill('admin');
-  await loginDialog.getByLabel('Password').fill('incorrect-e2e-password');
-  await loginDialog.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(loginDialog.getByRole('alert')).toHaveText('Invalid username or credential');
-
-  await loginDialog.getByLabel('Password').fill(E2E_ADMIN_PASSWORD);
-  await loginDialog.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(loginDialog).toBeHidden();
   await expect(
     page.getByRole('heading', { name: 'Server Settings & Configuration' })
   ).toBeVisible();
@@ -118,7 +95,6 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
 
 test('browses the movie library and combines resolution and title filters', async ({ page }) => {
   await openCaster(page);
-  await signInAsAdmin(page);
 
   const movieResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -155,7 +131,6 @@ test('browses the movie library and combines resolution and title filters', asyn
 
 test('opens playback and restores persisted resume progress', async ({ page }) => {
   await openCaster(page);
-  await signInAsAdmin(page);
 
   const resetProgress = await fetchFromPage(page, {
     path: `/api/media/${MOONRISE_MEDIA_ID}/progress`,
@@ -209,22 +184,3 @@ test('opens playback and restores persisted resume progress', async ({ page }) =
   await expect(page.getByRole('button', { name: 'Play from Beginning' })).toBeVisible();
 });
 
-test('clears authenticated UI when a protected request reports an expired session', async ({ page }) => {
-  await openCaster(page);
-  await signInAsAdmin(page);
-
-  await page.route((url) => url.pathname === '/api/media', async (route) => {
-    await route.fulfill({
-      status: 401,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'Your session has expired' })
-    });
-  });
-
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
-
-  await expect(page.getByRole('heading', { name: 'Sign in to view this Caster library' })).toBeVisible();
-  await expect(page.getByText('Your session has expired')).toBeVisible();
-  await expect(page.getByTitle('Sign out admin')).toHaveCount(0);
-  await expect(page.getByRole('main').getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
-});

@@ -4,11 +4,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { Hono } from 'hono';
-import type { AuthPrincipal } from '../apps/server/src/auth';
 import { initDatabase, LibraryModel, MediaModel } from '../apps/server/src/db';
 import { db } from '../apps/server/src/db';
-import { AccountProvisioningStore } from '../apps/server/src/db/account-provisioning';
-import { SqliteUserStore } from '../apps/server/src/db/user-store';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
 import { createApiRequestSecurity } from '../apps/server/src/security/request-security';
@@ -20,8 +17,6 @@ import {
 
 describe('scanner and playback route failures', () => {
   const app = new Hono();
-  const adminId = `playback-scanner-admin-${crypto.randomUUID()}`;
-  const adminToken = `playback-scanner-token-${crypto.randomUUID()}`;
   const originalGetHlsSegment = transcoder.getHlsSegment;
   const originalScanStatus = {
     ...scanStatus,
@@ -36,26 +31,11 @@ describe('scanner and playback route failures', () => {
   let mediaPath = '';
   let missingSourceMediaId = '';
 
-  app.use('/api/*', createApiRequestSecurity({
-    isProtectedModeEnabled: () => false,
-    isAuthConfigured: () => true,
-    anonymousOpenAccessAllowed: () => true,
-    resolvePrincipal: (context): AuthPrincipal | null => {
-      if (context.req.header('authorization') !== `Bearer ${adminToken}`) return null;
-      return {
-        id: adminId,
-        username: adminId,
-        role: 'admin',
-        credential: 'bearer'
-      };
-    }
-  }));
+  app.use('/api/*', createApiRequestSecurity());
   app.route('/api', apiRouter);
 
-  function adminRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.set('Authorization', `Bearer ${adminToken}`);
-    return app.request(pathname, { ...init, headers });
+  function request(pathname: string, init: RequestInit = {}): Promise<Response> {
+    return app.request(pathname, init);
   }
 
   async function withMockedHlsSegment(
@@ -76,10 +56,6 @@ describe('scanner and playback route failures', () => {
 
   beforeAll(() => {
     initDatabase();
-    const users = new SqliteUserStore(db);
-    users.create(adminId, adminId, 'admin');
-    users.setCredential(adminId, 'api_token', adminToken);
-    new AccountProvisioningStore(db).claimLegacyOwnerIfConfigured(adminId);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-playback-scanner-'));
     scanRoot = path.join(fixtureRoot, 'empty-library');
@@ -158,8 +134,6 @@ describe('scanner and playback route failures', () => {
   afterAll(() => {
     if (scanLibraryId) LibraryModel.delete(scanLibraryId);
     if (playbackLibraryId) LibraryModel.delete(playbackLibraryId);
-    db.run('DELETE FROM users WHERE id = ?', [adminId]);
-
     const expectedPrefix = path.join(os.tmpdir(), 'caster-playback-scanner-');
     if (fixtureRoot.startsWith(expectedPrefix)) {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -167,7 +141,7 @@ describe('scanner and playback route failures', () => {
   });
 
   it('starts a scan for an existing library and exposes its completed status', async () => {
-    const response = await adminRequest(`/api/libraries/${scanLibraryId}/scan`, {
+    const response = await request(`/api/libraries/${scanLibraryId}/scan`, {
       method: 'POST'
     });
 
@@ -177,7 +151,7 @@ describe('scanner and playback route failures', () => {
       libraryId: scanLibraryId
     });
 
-    const statusResponse = await adminRequest('/api/libraries/scan/status');
+    const statusResponse = await request('/api/libraries/scan/status');
     expect(statusResponse.status).toBe(200);
     expect(await statusResponse.json()).toMatchObject({
       isScanning: false,
@@ -199,7 +173,7 @@ describe('scanner and playback route failures', () => {
       errors: ['fixture warning']
     });
 
-    const statusResponse = await adminRequest('/api/libraries/scan/status');
+    const statusResponse = await request('/api/libraries/scan/status');
     expect(statusResponse.status).toBe(200);
     expect(await statusResponse.json()).toEqual({
       isScanning: true,
@@ -210,7 +184,7 @@ describe('scanner and playback route failures', () => {
       errors: ['fixture warning']
     });
 
-    const scanAllResponse = await adminRequest('/api/libraries/scan-all', {
+    const scanAllResponse = await request('/api/libraries/scan-all', {
       method: 'POST'
     });
     expect(scanAllResponse.status).toBe(409);
@@ -225,7 +199,7 @@ describe('scanner and playback route failures', () => {
         throw new TranscodeCapacityError(4);
       },
       async () => {
-        const response = await adminRequest(
+        const response = await request(
           `/api/media/${mediaId}/hls/720p/segment-2.ts`
         );
 
@@ -245,7 +219,7 @@ describe('scanner and playback route failures', () => {
         throw new TranscodeKilledError();
       },
       async () => {
-        const response = await adminRequest(
+        const response = await request(
           `/api/media/${mediaId}/hls/480p/segment-1.ts`
         );
 
@@ -263,7 +237,7 @@ describe('scanner and playback route failures', () => {
         throw new Error('fixture transcoder failure');
       },
       async () => {
-        const response = await adminRequest(
+        const response = await request(
           `/api/media/${mediaId}/hls/360p/segment-0.ts`
         );
 

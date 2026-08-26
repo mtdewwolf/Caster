@@ -145,14 +145,12 @@ function FixMatch({ mediaId, onApplied, onDone }: CandidateListProps) {
 interface MetadataPanelProps {
   mediaId: string;
   metadata: MediaMetadata | null;
-  isAdmin: boolean;
   onChange: (metadata: MediaMetadata | null) => void;
 }
 
 export const MetadataPanel: React.FC<MetadataPanelProps> = ({
   mediaId,
   metadata,
-  isAdmin,
   onChange
 }) => {
   const { notify } = useToast();
@@ -219,7 +217,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
   const releaseDate = formatReleaseDate(metadata?.releaseDate ?? null);
   const visibleCast = metadata ? (showFullCast ? metadata.cast : metadata.cast.slice(0, 8)) : [];
 
-  const controls = isAdmin ? (
+  const controls = (
     <div className="flex flex-wrap items-center gap-2">
       <button
         type="button"
@@ -251,10 +249,9 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
         </button>
       )}
     </div>
-  ) : null;
+  );
 
   if (!metadata) {
-    if (!isAdmin) return null;
     return (
       <section className="space-y-3 rounded-xl border border-white/5 bg-slate-950/60 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

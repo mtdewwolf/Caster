@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type { MediaItem, Series, SystemHardwareStatus, ScanStatus } from './types';
-import { api, AUTH_INVALIDATED_EVENT } from './api';
-import type { AuthSession } from './api';
+import { api } from './api';
 import { Navbar, AppView } from './components/Navbar';
 import { MediaCard } from './components/MediaCard';
 import { SeriesCard } from './components/SeriesCard';
@@ -12,10 +11,6 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { AudioPlayer } from './components/AudioPlayer';
 import { SettingsModal } from './components/SettingsModal';
 import { ProgressPage } from './components/ProgressPage';
-import { LoginModal } from './components/LoginModal';
-import { ProfileSwitchModal } from './components/ProfileSwitchModal';
-import { OwnerSetupModal } from './components/OwnerSetupModal';
-import { InviteSignupModal } from './components/InviteSignupModal';
 import {
   DEFAULT_LIBRARY_FILTERS,
   LibraryFilterBar,
@@ -70,28 +65,8 @@ export const App: React.FC = () => {
   const mediaRequestId = useRef(0);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeriesId, setSelectedSeriesId] = useState<string | null>(null);
-  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [authSessionError, setAuthSessionError] = useState<string | null>(null);
-  const [showLogin, setShowLogin] = useState(false);
-  const [openSettingsAfterLogin, setOpenSettingsAfterLogin] = useState(false);
-  const [showProfileSwitch, setShowProfileSwitch] = useState(false);
-  const [inviteToken, setInviteToken] = useState(() => {
-    const match = window.location.hash.match(/^#invite=([^&]+)$/);
-    if (!match) return null;
-    try {
-      return decodeURIComponent(match[1]);
-    } catch {
-      return null;
-    }
-  });
-  const isAuthenticated = authSession?.authenticated === true;
-  const isAdmin = authSession?.user?.role === 'admin';
-  const principalKey = authSession?.authenticated && authSession.user
-    ? `${authSession.user.id}:${authSession.user.role}`
-    : 'anonymous';
-  const queueUserId = authSession?.authenticated && authSession.user
-    ? authSession.user.id
-    : 'anonymous';
+  const principalKey = 'public';
+  const queueUserId = 'public';
 
   useEffect(() => {
     queueOwnerRef.current = queueUserId;
@@ -133,34 +108,6 @@ export const App: React.FC = () => {
     return nextTrack;
   }, [musicQueue]);
 
-  const resetUserScopedState = useCallback(() => {
-    mediaRequestId.current += 1;
-    setMediaItems([]);
-    setMediaTotal(0);
-    setContinueWatching([]);
-    setSeriesList([]);
-    setSelectedSeriesId(null);
-    setSelectedItem(null);
-    setPlayingItem(null);
-    setWatchRoom(null);
-    setWatchRoomJoinError(null);
-    setHardware(null);
-    setScanStatus(null);
-    setShowSettings(false);
-    setShowProfileSwitch(false);
-    setView('library');
-    setRefreshToken((token) => token + 1);
-    setLoading(true);
-    setLoadingMore(false);
-  }, []);
-
-  const applyAuthSession = useCallback((session: AuthSession) => {
-    resetUserScopedState();
-    setAuthSessionError(null);
-    setAuthSession(session);
-  }, [resetUserScopedState]);
-
-
   const loadMedia = async () => {
     const requestId = ++mediaRequestId.current;
     setLoading(true);
@@ -180,8 +127,8 @@ export const App: React.FC = () => {
           offset: 0
         }),
         api.getContinueWatching(),
-        isAdmin ? api.getSystemStatus() : Promise.resolve(null),
-        isAdmin ? api.getScanStatus() : Promise.resolve(null)
+        api.getSystemStatus(),
+        api.getScanStatus()
       ]);
 
       if (requestId !== mediaRequestId.current) return;
@@ -189,7 +136,7 @@ export const App: React.FC = () => {
       setMediaItems(mediaRes.items || []);
       setMediaTotal(mediaRes.total || 0);
       setContinueWatching(cwRes || []);
-      setHardware(sysRes?.hardware ?? null);
+      setHardware(sysRes.hardware);
       setScanStatus(scanRes);
     } catch (err) {
       if (requestId !== mediaRequestId.current) return;
@@ -244,24 +191,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const checkAuthSession = useCallback(async () => {
-    setAuthSessionError(null);
-    try {
-      applyAuthSession(await api.getAuthSession());
-    } catch (caught) {
-      resetUserScopedState();
-      setAuthSession(null);
-      setLoading(false);
-      setAuthSessionError(caught instanceof Error ? caught.message : 'Unable to check your session');
-    }
-  }, [applyAuthSession, resetUserScopedState]);
-
   useEffect(() => {
-    void checkAuthSession();
-  }, [checkAuthSession]);
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
     const invitation = readWatchRoomInvite();
     if (!invitation) return;
     const invitationKey = `${invitation.roomId}:${invitation.inviteToken}`;
@@ -282,27 +212,7 @@ export const App: React.FC = () => {
         handledWatchInviteRef.current = null;
         setWatchRoomJoinError(error instanceof Error ? error.message : 'Unable to join watch room');
       });
-  }, [isAuthenticated]);
-
-  useEffect(() => {
-    const handleAuthInvalidated = (event: Event) => {
-      const message = event instanceof CustomEvent && typeof event.detail?.message === 'string'
-        ? event.detail.message
-        : 'Your session has ended. Sign in again to continue.';
-      resetUserScopedState();
-      setAuthSession((current) => ({
-        authenticated: false,
-        configured: current?.configured ?? true,
-        protectedMode: current?.protectedMode ?? true,
-        setupRequired: current?.setupRequired ?? false
-      }));
-      setAuthSessionError(message);
-      setShowLogin(false);
-      setOpenSettingsAfterLogin(false);
-    };
-    window.addEventListener(AUTH_INVALIDATED_EVENT, handleAuthInvalidated);
-    return () => window.removeEventListener(AUTH_INVALIDATED_EVENT, handleAuthInvalidated);
-  }, [resetUserScopedState]);
+  }, []);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -313,30 +223,22 @@ export const App: React.FC = () => {
   }, [searchQuery]);
 
   useEffect(() => {
-    if (authSession === null || (authSession.protectedMode && !authSession.authenticated)) {
-      setLoading(authSession === null);
-      return;
-    }
     if (activeType === 'track') {
       setLoading(false);
       return;
     }
     loadMedia();
-  }, [activeType, debouncedSearchQuery, filters, authSession?.authenticated, authSession?.user?.id, authSession?.user?.role]);
+  }, [activeType, debouncedSearchQuery, filters]);
 
   // Genres come from what is actually indexed, so the menu never offers a
   // filter that would return nothing. A failure here just hides the menu.
   useEffect(() => {
-    if (!isAuthenticated) {
-      setGenres([]);
-      return;
-    }
     let cancelled = false;
     api.getGenres({ type: activeType || undefined })
       .then((names) => { if (!cancelled) setGenres(names); })
       .catch(() => { if (!cancelled) setGenres([]); });
     return () => { cancelled = true; };
-  }, [activeType, isAuthenticated, refreshToken]);
+  }, [activeType, refreshToken]);
 
   useEffect(() => {
     if (!scanStatus?.isScanning) return;
@@ -357,12 +259,11 @@ export const App: React.FC = () => {
       setSelectedSeriesId(null);
       return;
     }
-    if (authSession === null || (authSession.protectedMode && !authSession.authenticated)) return;
     api
       .getSeries({ search: searchQuery || undefined })
       .then(setSeriesList)
       .catch((err) => console.error('Error fetching series:', err));
-  }, [activeType, searchQuery, refreshToken, authSession?.authenticated, authSession?.user?.id]);
+  }, [activeType, searchQuery, refreshToken]);
 
   const closePlayer = () => {
     if (watchRoom) void leaveWatchRoom(watchRoom.roomId).catch(() => undefined);
@@ -378,83 +279,8 @@ export const App: React.FC = () => {
     }
   };
 
-  const openLogin = (continueToSettings = false) => {
-    setOpenSettingsAfterLogin(continueToSettings);
-    setShowLogin(true);
-  };
-
   const handleOpenSettings = () => {
-    if (isAdmin) {
-      setShowSettings(true);
-      return;
-    }
-    openLogin(true);
-  };
-
-  const handleLogin = async (username: string, credential: string) => {
-    const response = await api.login(username, credential);
-    applyAuthSession({
-      authenticated: true,
-      configured: true,
-      protectedMode: true,
-      setupRequired: false,
-      user: response.user
-    });
-    setShowLogin(false);
-    if (openSettingsAfterLogin && response.user.role === 'admin') setShowSettings(true);
-    setOpenSettingsAfterLogin(false);
-  };
-
-  const handleLogout = async () => {
-    try {
-      await api.logout();
-    } finally {
-      applyAuthSession({
-        authenticated: false,
-        configured: authSession?.configured ?? true,
-        protectedMode: authSession?.protectedMode ?? true,
-        setupRequired: authSession?.setupRequired ?? false
-      });
-    }
-  };
-
-  const handleProfileSwitch = async (username: string, pin: string) => {
-    const response = await api.switchProfile(username, pin);
-    applyAuthSession({
-      authenticated: true,
-      configured: authSession?.configured ?? true,
-      protectedMode: authSession?.protectedMode ?? true,
-      setupRequired: authSession?.setupRequired ?? false,
-      user: response.user
-    });
-  };
-
-  const handleOwnerSetup = async (username: string, password: string) => {
-    const response = await api.setupOwner(username, password);
-    applyAuthSession({
-      authenticated: true,
-      configured: true,
-      protectedMode: true,
-      setupRequired: false,
-      user: response.user
-    });
-  };
-
-  const clearInvite = () => {
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-    setInviteToken(null);
-  };
-
-  const handleInviteSignup = async (token: string, username: string, password: string) => {
-    const response = await api.signup(token, username, password);
-    clearInvite();
-    applyAuthSession({
-      authenticated: true,
-      configured: true,
-      protectedMode: true,
-      setupRequired: false,
-      user: response.user
-    });
+    setShowSettings(true);
   };
 
   // Featured hero item (either the first continue watching or first media item)
@@ -473,11 +299,6 @@ export const App: React.FC = () => {
         onOpenSettings={handleOpenSettings}
         hardware={hardware}
         isScanning={!!scanStatus?.isScanning}
-        user={authSession?.user}
-        isAdmin={isAdmin}
-        onLogin={() => openLogin(false)}
-        onSwitchProfile={() => setShowProfileSwitch(true)}
-        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
@@ -489,38 +310,13 @@ export const App: React.FC = () => {
             <button type="button" onClick={() => setWatchRoomJoinError(null)} className="mt-2 text-xs font-semibold underline">Dismiss</button>
           </div>
         )}
-        {authSessionError && authSession === null ? (
-          <div role="alert" className="mx-auto mt-20 max-w-md rounded-2xl border border-rose-500/25 bg-rose-950/30 p-6 text-center">
-            <h1 className="text-lg font-bold text-white">Unable to check your session</h1>
-            <p className="mt-2 text-sm text-rose-200">{authSessionError}</p>
-            <button type="button" onClick={() => void checkAuthSession()} className="mt-5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500">
-              Try again
-            </button>
-          </div>
-        ) : authSession?.setupRequired ? (
-          <div className="mx-auto mt-20 max-w-md rounded-2xl border border-white/10 bg-slate-900/60 p-8 text-center">
-            <h1 className="text-xl font-bold text-white">This Caster server needs an owner</h1>
-            <p className="mt-2 text-sm text-slate-400">Complete the one-time setup from the server host's local network.</p>
-          </div>
-        ) : authSession?.protectedMode && !isAuthenticated ? (
-          <div className="mx-auto mt-20 max-w-md rounded-2xl border border-white/10 bg-slate-900/60 p-8 text-center">
-            <h1 className="text-xl font-bold text-white">Sign in to view this Caster library</h1>
-            <p className="mt-2 text-sm text-slate-400">
-              {authSessionError || 'This server requires an account before media and watch progress can be viewed.'}
-            </p>
-            <button type="button" onClick={() => openLogin(false)} className="mt-5 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-500">
-              Sign in
-            </button>
-          </div>
-        ) : view === 'home' ? (
+        {view === 'home' ? (
           <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-8">
             <HomePage
               key={principalKey}
-              isAuthenticated={isAuthenticated}
               refreshToken={refreshToken}
               onPlay={(i) => setPlayingItem(i)}
               onSelect={(i) => setSelectedItem(i)}
-              onRequireAuthentication={() => openLogin(false)}
               onBrowseLibrary={() => { setView('library'); setActiveType(''); }}
             />
           </div>
@@ -531,8 +327,6 @@ export const App: React.FC = () => {
               refreshToken={refreshToken}
               onPlay={(i) => setPlayingItem(i)}
               onSelect={(i) => setSelectedItem(i)}
-              isAuthenticated={isAuthenticated}
-              onRequireAuthentication={() => openLogin(false)}
             />
           </div>
         ) : activeType === 'track' ? (
@@ -632,7 +426,6 @@ export const App: React.FC = () => {
               <SeriesDetailPage
                 key={`${principalKey}:${selectedSeriesId}`}
                 seriesId={selectedSeriesId}
-                isAdmin={isAdmin}
                 refreshToken={refreshToken}
                 onBack={() => setSelectedSeriesId(null)}
                 onPlay={(i) => setPlayingItem(i)}
@@ -783,7 +576,7 @@ export const App: React.FC = () => {
           key={playingItem.id}
           item={playingItem}
           onClose={closePlayer}
-          trackProgress={isAuthenticated}
+          trackProgress
           onAdvance={(nextItem) => setPlayingItem(nextItem)}
           watchRoom={watchRoom}
           onWatchRoomStarted={setWatchRoom}
@@ -795,7 +588,6 @@ export const App: React.FC = () => {
       {selectedItem && (
         <MediaDetailModal
           item={selectedItem}
-          isAdmin={isAdmin}
           onSelectVersion={(mediaId) => {
             // Swap the detail view to the chosen file; progress follows the
             // title, so the resume point is unchanged.
@@ -817,29 +609,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {showLogin && (
-        <LoginModal
-          onClose={() => {
-            setShowLogin(false);
-            setOpenSettingsAfterLogin(false);
-          }}
-          onLogin={handleLogin}
-        />
-      )}
-
-      {authSession?.setupRequired ? <OwnerSetupModal onSetup={handleOwnerSetup} /> : null}
-
-      {inviteToken && authSession && !authSession.setupRequired ? (
-        <InviteSignupModal token={inviteToken} onClose={clearInvite} onSignup={handleInviteSignup} />
-      ) : null}
-
-      {showProfileSwitch && authSession?.user ? (
-        <ProfileSwitchModal
-          currentUsername={authSession.user.username}
-          onClose={() => setShowProfileSwitch(false)}
-          onSwitch={handleProfileSwitch}
-        />
-      ) : null}
     </div>
   );
 };

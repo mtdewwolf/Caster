@@ -1,13 +1,9 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import type { EndpointCandidate } from '../remote/endpoints';
 import { orderCandidates } from '../remote/negotiation';
 
-type MaybePromise<T> = T | Promise<T>;
-
 export interface ConnectionRouterDependencies {
   collectEndpoints: () => EndpointCandidate[];
-  /** Must return false unless the caller is an authenticated principal. */
-  isAuthenticated: (context: Context) => MaybePromise<boolean>;
 }
 
 /**
@@ -21,15 +17,11 @@ export interface ConnectionRouterDependencies {
 export function createConnectionRouter(dependencies: ConnectionRouterDependencies): Hono {
   const router = new Hono();
 
-  router.get('/endpoints', async (context) => {
-    if (!await dependencies.isAuthenticated(context)) {
-      return context.json({ error: 'Authentication required' }, 401);
-    }
-
+  router.get('/endpoints', (context) => {
     context.header('Cache-Control', 'no-store');
     return context.json({
       // Addresses only. Nothing here reveals the filesystem, the control plane
-      // credentials, or anything an unauthenticated caller could act on.
+      // private credentials or other server secrets.
       endpoints: orderCandidates(dependencies.collectEndpoints())
         .map(({ kind, url, priority, tls }) => ({ kind, url, priority, tls }))
     });

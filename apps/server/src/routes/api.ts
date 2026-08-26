@@ -5,14 +5,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { db, ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { isWatchedFilter, MEDIA_SORT_OPTIONS, WATCHED_FILTERS } from '../db';
-import { AccessControlStore, type AccessPrincipal } from '../db/access-control';
 import { createMusicLibraryStore } from '../db/music-library';
 import { MediaMarkerStore } from '../db/media-marker-store';
 import { clientIsRemote } from '../security/client-network';
-import {
-  anonymousOpenAccessAllowed,
-  requestClientNetworkInput
-} from '../security/request-security';
+import { requestClientNetworkInput } from '../security/request-security';
 import { scanAllLibraries, scanLibrary, scanStatus } from '../scanner/indexer';
 import { convertSrtToVtt } from '../scanner/subtitles';
 import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
@@ -32,12 +28,7 @@ import {
 } from '../transcoder/quality';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 import { normalizeContentRating } from '../content-ratings';
-import {
-  getCurrentUserId,
-  isProtectedModeEnabled,
-  resolvePrincipal,
-  type AuthPrincipal
-} from '../auth';
+import { getCurrentUserId, PUBLIC_USER_ID } from '../identity';
 import { createMusicRouter } from './music';
 import { createPlaybackRouter } from './playback';
 import { createMetadataProvidersRouter, createMetadataRouter, publicMetadata } from './metadata';
@@ -67,10 +58,8 @@ import {
 } from '../metadata/runtime';
 import { playlistRouter } from './playlists';
 import { createWatchTogetherRouter } from './watch-together';
-import { createCastAccessToken } from '../security/cast-access';
 
 export const apiRouter = new Hono();
-const accessControl = new AccessControlStore(db);
 const markerStore = new MediaMarkerStore(db);
 
 const VIDEO_EXTENSIONS = new Set([
@@ -123,21 +112,6 @@ interface ByteRange {
   end: number;
 }
 
-function accessPrincipal(c: Context): AccessPrincipal | null {
-  const principal = resolvePrincipal(c);
-  if (principal) {
-    return { userId: principal.id, role: principal.role, active: true };
-  }
-
-  // Explicit local/open mode retains the original account-free experience.
-  // Its synthetic admin role is used only for ACL bypass; request-security
-  // middleware still locks administrative routes until auth is configured.
-  if (!isProtectedModeEnabled() && anonymousOpenAccessAllowed(c)) {
-    return { userId: getCurrentUserId(c), role: 'admin', active: true };
-  }
-  return null;
-}
-
 function requestIsRemote(c: Context): boolean {
   return clientIsRemote(requestClientNetworkInput(c));
 }
@@ -147,48 +121,24 @@ function mediaIsAccessible(
   mediaId: string,
   action: 'discover' | 'stream' | 'download' | 'delete' = 'discover'
 ): boolean {
-  const principal = accessPrincipal(c);
-  return !!principal && accessControl.canAccessMedia(principal, mediaId, {
-    action,
-    remote: action === 'stream' && requestIsRemote(c)
-  });
+  // There are no account or ACL boundaries in the account-free runtime.
+  return !!MediaModel.getById(mediaId, PUBLIC_USER_ID);
 }
 
-function libraryScopeFor(c: Context): string[] | undefined {
-  const principal = accessPrincipal(c);
-  return principal ? accessControl.getLibraryScope(principal) : [];
+function libraryScopeFor(_c: Context): string[] | undefined {
+  return undefined;
 }
 
-function contentRatingScopeFor(c: Context) {
-  const principal = accessPrincipal(c);
-  return principal ? accessControl.getContentRatingScope(principal) : undefined;
-}
-
-function castQuerySuffix(c: Context): string {
-  const principal = resolvePrincipal(c);
-  const token = principal?.credential === 'cast' ? c.req.query('cast') : undefined;
-  return token ? `?cast=${encodeURIComponent(token)}` : '';
+function contentRatingScopeFor(_c: Context) {
+  return undefined;
 }
 
 function libraryIsInScope(scope: readonly string[] | undefined, libraryId: string): boolean {
   return scope === undefined || scope.includes(libraryId);
 }
 
-function viewerSafeLibrary<T extends { path?: string }>(principal: AuthPrincipal | null, library: T): T | Omit<T, 'path'> {
-  if (principal?.role === 'admin') return library;
-  const { path: _path, ...safe } = library;
-  return safe;
-}
-
-function viewerSafeMedia<T extends { full_path?: string }>(principal: AuthPrincipal | null, media: T): T | Omit<T, 'full_path'> {
-  if (principal?.role === 'admin') return media;
-  const { full_path: _fullPath, ...safe } = media;
-  return safe;
-}
-
 function viewerSafeMediaList<T extends { full_path?: string }>(c: Context, items: T[]) {
-  const principal = resolvePrincipal(c);
-  return items.map((item) => viewerSafeMedia(principal, item));
+  return items;
 }
 
 async function readJsonObject(c: Context): Promise<Record<string, unknown> | null> {
@@ -470,10 +420,9 @@ apiRouter.get('/fs/suggest', (c) => {
 apiRouter.get('/libraries', (c) => {
   const scope = libraryScopeFor(c);
   const allowed = scope && new Set(scope);
-  const principal = resolvePrincipal(c);
   const libraries = LibraryModel.getAll({ contentRatingScope: contentRatingScopeFor(c) })
     .filter((library) => !allowed || allowed.has(library.id))
-    .map((library) => viewerSafeLibrary(principal, library));
+    .map((library) => library);
   return c.json({ libraries });
 });
 
@@ -775,7 +724,7 @@ apiRouter.get('/media/:id', (c) => {
   const plan = planMetadataMatch(item);
   const metadata = plan ? metadataStore.get(plan.subject) : null;
   return c.json({
-    item: viewerSafeMedia(resolvePrincipal(c), item),
+    item,
     metadata: metadata ? publicMetadata(metadata) : null,
     // Image subtitles cannot be handed to the player as a text track, so the
     // client needs to know which ones force a burned-in transcode.
@@ -808,7 +757,7 @@ apiRouter.patch('/media/:id/content-rating', async (c) => {
     return c.json({ error: 'Unsupported content rating' }, 400);
   }
   const item = MediaModel.updateContentRating(id, normalized, getCurrentUserId(c));
-  return c.json({ item: viewerSafeMedia(resolvePrincipal(c), item!) });
+  return c.json({ item: item! });
 });
 
 // ---------------- Series Rollup API ---------------- //
@@ -1018,18 +967,14 @@ apiRouter.get('/media/:id/stream', async (c) => {
 });
 
 // Browsers hand media URLs to Cast/AirPlay receivers, which do not share the
-// browser session. Issue a time-limited URL scoped to this user and media item.
+// browser page. Return public playback paths for a receiver to use directly.
 apiRouter.get('/media/:id/cast', (c) => {
   const id = c.req.param('id');
   if (!mediaIsAccessible(c, id, 'stream')) {
     return c.json({ error: 'Media not found' }, 404);
   }
 
-  const principal = resolvePrincipal(c);
-  const grant = principal
-    ? createCastAccessToken(principal.id, id)
-    : null;
-  const suffix = grant ? `?cast=${encodeURIComponent(grant.token)}` : '';
+  const suffix = '';
   const base = `/api/media/${encodeURIComponent(id)}`;
   return c.json({
     directUrl: `${base}/stream${suffix}`,
@@ -1041,7 +986,7 @@ apiRouter.get('/media/:id/cast', (c) => {
     },
     subtitleUrlBase: `${base}/subtitles/`,
     query: suffix,
-    expiresAt: grant?.expiresAt ?? null
+    expiresAt: null
   });
 });
 
@@ -1198,7 +1143,7 @@ apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
     id,
     item.width || 1920,
     item.height || 1080,
-    audioQuerySuffix(c, castQuerySuffix(c)),
+    audioQuerySuffix(c, ''),
     streamRequestFor(c, item)
   );
   return new Response(playlist, {
@@ -1232,7 +1177,7 @@ apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
     id,
     item.duration || 3600,
     quality,
-    audioQuerySuffix(c, castQuerySuffix(c)),
+    audioQuerySuffix(c, ''),
     packaging
   );
   return new Response(playlist, {
@@ -1472,13 +1417,13 @@ apiRouter.route('/music', createMusicRouter({
     allowedLibraryIds: libraryScopeFor(c),
     contentRatingScope: contentRatingScopeFor(c)
   }),
-  serializeTrack: (c, track) => viewerSafeMedia(resolvePrincipal(c), track)
+  serializeTrack: (_c, track) => track
 }));
 
 apiRouter.route('/playlists', playlistRouter);
 
 apiRouter.route('/watch-rooms', createWatchTogetherRouter({
-  getAuthenticatedUserId: (c) => resolvePrincipal(c)?.id ?? null,
+  getUserId: (c) => getCurrentUserId(c),
   resolveMedia: (c, id) => {
     if (!mediaIsAccessible(c, id, 'stream')) return null;
     return MediaModel.getById(
@@ -1501,14 +1446,12 @@ apiRouter.route('/media', createMetadataRouter({
   store: metadataStore,
   enrichment: metadataEnrichment,
   registry: metadataRegistry,
-  resolveMedia: viewerScopedMedia,
-  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
+  resolveMedia: viewerScopedMedia
 }));
 
 apiRouter.route('/metadata', createMetadataProvidersRouter({
   registry: metadataRegistry,
-  artworkCache,
-  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
+  artworkCache
 }));
 
 const ARTWORK_MIME_TYPES: Record<string, string> = {
@@ -1566,120 +1509,9 @@ apiRouter.route('/media', createPlaybackRouter({
     );
     const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
     const next = currentIndex >= 0 ? items[currentIndex + 1] : undefined;
-    return next ? viewerSafeMedia(resolvePrincipal(c), next) : null;
+    return next ?? null;
   },
-  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
 }));
-
-// ---------------- Account Access Administration ---------------- //
-
-function managedAccessPrincipal(userId: string): AccessPrincipal | null {
-  const user = db.query(`
-    SELECT id, role, active FROM users WHERE id = ?
-  `).get(userId) as { id: string; role: 'admin' | 'viewer'; active: number } | null;
-  return user
-    ? { userId: user.id, role: user.role, active: user.active === 1 }
-    : null;
-}
-
-apiRouter.get('/access/users/:userId/libraries', (c) => {
-  const principal = managedAccessPrincipal(c.req.param('userId'));
-  if (!principal) return c.json({ error: 'User not found' }, 404);
-  return c.json({ libraryIds: accessControl.getAllowedLibraryIds(principal) });
-});
-
-apiRouter.put('/access/users/:userId/libraries', async (c) => {
-  const userId = c.req.param('userId');
-  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
-
-  const body = await readJsonObject(c);
-  if (!body || !Array.isArray(body.libraryIds)
-    || body.libraryIds.some((id) => typeof id !== 'string' || id.length === 0)) {
-    return c.json({ error: 'libraryIds must be an array of library IDs' }, 400);
-  }
-
-  const libraryIds = [...new Set(body.libraryIds as string[])];
-  const knownIds = new Set(LibraryModel.getAll().map((library) => library.id));
-  if (libraryIds.some((id) => !knownIds.has(id))) {
-    return c.json({ error: 'One or more libraries do not exist' }, 400);
-  }
-
-  const updateGrants = db.transaction(() => {
-    const currentIds = new Set(
-      (db.query(`
-        SELECT library_id FROM user_library_access WHERE user_id = ?
-      `).all(userId) as Array<{ library_id: string }>).map((row) => row.library_id)
-    );
-    for (const libraryId of currentIds) {
-      if (!libraryIds.includes(libraryId)) accessControl.unshareLibrary(userId, libraryId);
-    }
-    for (const libraryId of libraryIds) {
-      if (!currentIds.has(libraryId)) accessControl.shareLibrary(userId, libraryId);
-    }
-  });
-  updateGrants();
-
-  return c.json({ libraryIds });
-});
-
-apiRouter.get('/access/users/:userId/permissions', (c) => {
-  const userId = c.req.param('userId');
-  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
-  return c.json({ permissions: accessControl.getPermissions(userId) });
-});
-
-apiRouter.patch('/access/users/:userId/permissions', async (c) => {
-  const userId = c.req.param('userId');
-  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
-  const body = await readJsonObject(c);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-
-  const booleanKeys = [
-    'allowUnrated',
-    'canDownload',
-    'canStreamRemote',
-    'canDeleteMedia',
-    'canManageProfiles'
-  ] as const;
-  if (booleanKeys.some((key) => body[key] !== undefined && typeof body[key] !== 'boolean')) {
-    return c.json({ error: 'Permission flags must be boolean values' }, 400);
-  }
-  if (body.maxContentRating !== undefined
-    && body.maxContentRating !== null
-    && typeof body.maxContentRating !== 'string') {
-    return c.json({ error: 'maxContentRating must be a rating string or null' }, 400);
-  }
-
-  try {
-    const permissions = accessControl.updatePermissions(userId, {
-      maxContentRating: body.maxContentRating as string | null | undefined,
-      allowUnrated: body.allowUnrated as boolean | undefined,
-      canDownload: body.canDownload as boolean | undefined,
-      canStreamRemote: body.canStreamRemote as boolean | undefined,
-      canDeleteMedia: body.canDeleteMedia as boolean | undefined,
-      canManageProfiles: body.canManageProfiles as boolean | undefined
-    });
-    return c.json({ permissions });
-  } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Invalid permissions' }, 400);
-  }
-});
-
-apiRouter.patch('/access/users/:userId/pin', async (c) => {
-  const userId = c.req.param('userId');
-  if (!managedAccessPrincipal(userId)) return c.json({ error: 'User not found' }, 404);
-  const body = await readJsonObject(c);
-  if (!body || (body.pin !== null && typeof body.pin !== 'string')) {
-    return c.json({ error: 'pin must be a 4 to 12 digit string or null' }, 400);
-  }
-
-  try {
-    accessControl.setProfilePin(userId, body.pin as string | null);
-    return c.json({ permissions: accessControl.getPermissions(userId) });
-  } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Invalid profile PIN' }, 400);
-  }
-});
 
 // ---------------- System Status & Hardware Accel ---------------- //
 
@@ -1713,7 +1545,6 @@ apiRouter.post('/system/hardware/accel', async (c) => {
   return c.json({ success: true, hardware: transcoder.getHardwareStatus() });
 });
 
-// Mutating API routes are admin-authenticated by the server middleware.
 apiRouter.post('/system/transcodes/kill', (c) => {
   const killed = transcoder.killAllTranscodes();
   return c.json({

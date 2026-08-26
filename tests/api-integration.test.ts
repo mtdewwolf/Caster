@@ -4,43 +4,27 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { Hono } from 'hono';
-import {
-  ADMIN_USER_ID,
-  PUBLIC_USER_ID,
-  authRouter,
-  requireAdminForMutations
-} from '../apps/server/src/auth';
 import { db, initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
-import { SqliteUserStore } from '../apps/server/src/db/user-store';
+import { PUBLIC_USER_ID } from '../apps/server/src/identity';
 import { apiRouter } from '../apps/server/src/routes/api';
 import { scanStatus } from '../apps/server/src/scanner/indexer';
 import server from '../apps/server/src/index';
 
 describe('API integration regressions', () => {
   const app = new Hono();
-  const adminToken = `integration-token-${crypto.randomUUID()}`;
-  const originalAdminPassword = process.env.ADMIN_PASSWORD;
-  const originalAdminToken = process.env.ADMIN_TOKEN;
   let fixtureRoot = '';
   let libraryId = '';
   let mediaId = '';
   let mediaPath = '';
 
-  app.use('/api/*', requireAdminForMutations);
-  app.route('/api/auth', authRouter);
   app.route('/api', apiRouter);
 
-  function adminRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.set('Authorization', `Bearer ${adminToken}`);
-    return app.request(pathname, { ...init, headers });
+  function request(pathname: string, init: RequestInit = {}): Promise<Response> {
+    return app.request(pathname, init);
   }
 
   beforeAll(() => {
-    process.env.ADMIN_PASSWORD = 'integration-password';
-    process.env.ADMIN_TOKEN = adminToken;
     initDatabase();
-    new SqliteUserStore(db).setCredential(ADMIN_USER_ID, 'api_token', adminToken);
 
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caster-api-integration-'));
     mediaPath = path.join(fixtureRoot, 'Range.Test.2026.mp4');
@@ -80,33 +64,25 @@ describe('API integration regressions', () => {
 
   afterAll(() => {
     if (libraryId) LibraryModel.delete(libraryId);
-    if (originalAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
-    else process.env.ADMIN_PASSWORD = originalAdminPassword;
-    if (originalAdminToken === undefined) delete process.env.ADMIN_TOKEN;
-    else process.env.ADMIN_TOKEN = originalAdminToken;
-
     const expectedPrefix = path.join(os.tmpdir(), 'caster-api-integration-');
     if (fixtureRoot.startsWith(expectedPrefix)) {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
 
-  it('guards every registered API mutation with admin authentication', async () => {
+  it('allows registered API mutations without account credentials', async () => {
     const mutationMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
     const routes = apiRouter.routes.filter((route) => mutationMethods.has(route.method));
     const results: Array<{ method: string; path: string; status: number }> = [];
 
     for (const route of routes) {
       const concretePath = route.path.replace(/:[^/]+/g, 'test-value');
-      const response = await app.request(`/api${concretePath}`, { method: route.method });
+      const response = await request(`/api${concretePath}`, { method: route.method });
       results.push({ method: route.method, path: route.path, status: response.status });
     }
 
     expect(routes.length).toBeGreaterThan(0);
-    expect(results.filter((result) => result.status !== 401)).toEqual([]);
-
-    const logoutResponse = await app.request('/api/auth/logout', { method: 'POST' });
-    expect(logoutResponse.status).toBe(200);
+    expect(results.every((result) => result.status !== 401 && result.status !== 403)).toBe(true);
   });
 
   it('returns stable 400 responses for malformed JSON bodies', async () => {
@@ -117,9 +93,9 @@ describe('API integration regressions', () => {
       { path: '/api/system/cache/clear', method: 'POST' }
     ];
 
-    for (const request of requests) {
-      const response = await adminRequest(request.path, {
-        method: request.method,
+    for (const requestSpec of requests) {
+      const response = await request(requestSpec.path, {
+        method: requestSpec.method,
         headers: { 'Content-Type': 'application/json' },
         body: '{'
       });
@@ -130,12 +106,12 @@ describe('API integration regressions', () => {
   });
 
   it('validates library, scanner, pagination, and progress query inputs', async () => {
-    const invalidType = await adminRequest('/api/libraries', {
+    const invalidType = await request('/api/libraries', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Invalid', path: fixtureRoot, type: 'documents' })
     });
-    const invalidPath = await adminRequest('/api/libraries', {
+    const invalidPath = await request('/api/libraries', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -144,7 +120,7 @@ describe('API integration regressions', () => {
         type: 'movies'
       })
     });
-    const missingScan = await adminRequest('/api/libraries/does-not-exist/scan', {
+    const missingScan = await request('/api/libraries/does-not-exist/scan', {
       method: 'POST'
     });
     const invalidLimit = await app.request('/api/media?limit=not-a-number');
@@ -163,7 +139,7 @@ describe('API integration regressions', () => {
 
     scanStatus.isScanning = true;
     try {
-      const busyScan = await adminRequest(`/api/libraries/${libraryId}/scan`, { method: 'POST' });
+      const busyScan = await request(`/api/libraries/${libraryId}/scan`, { method: 'POST' });
       expect(busyScan.status).toBe(409);
       expect(await busyScan.json()).toEqual({ error: 'A scan is already in progress' });
     } finally {
@@ -172,16 +148,14 @@ describe('API integration regressions', () => {
     }
   });
 
-  it('isolates route-level progress by principal and rejects invalid updates', async () => {
+  it('uses the shared public progress owner and rejects invalid updates', async () => {
     ProgressModel.upsert(PUBLIC_USER_ID, mediaId, 20, 100);
-    ProgressModel.upsert(ADMIN_USER_ID, mediaId, 40, 100);
 
-    const anonymousItem = await app.request(`/api/media/${mediaId}`);
-    const adminItem = await adminRequest(`/api/media/${mediaId}`);
-    expect(anonymousItem.status).toBe(404);
-    expect((await adminItem.json()).item.progress.position_seconds).toBe(40);
+    const item = await request(`/api/media/${mediaId}`);
+    expect(item.status).toBe(200);
+    expect((await item.json()).item.progress.position_seconds).toBe(20);
 
-    const update = await adminRequest(`/api/media/${mediaId}/progress`, {
+    const update = await request(`/api/media/${mediaId}/progress`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ position: 65, duration: 100 })
@@ -189,13 +163,13 @@ describe('API integration regressions', () => {
     expect(update.status).toBe(200);
     expect(await update.json()).toMatchObject({
       progress: {
-        user_id: ADMIN_USER_ID,
+        user_id: PUBLIC_USER_ID,
         media_id: mediaId,
         position_seconds: 65,
         duration_seconds: 100
       }
     });
-    expect(MediaModel.getById(mediaId, PUBLIC_USER_ID)?.progress?.position_seconds).toBe(20);
+    expect(MediaModel.getById(mediaId, PUBLIC_USER_ID)?.progress?.position_seconds).toBe(65);
 
     const invalidUpdates = [
       { position: -1, duration: 100 },
@@ -203,7 +177,7 @@ describe('API integration regressions', () => {
       { position: 10, duration: 0 }
     ];
     for (const body of invalidUpdates) {
-      const response = await adminRequest(`/api/media/${mediaId}/progress`, {
+      const response = await request(`/api/media/${mediaId}/progress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -211,7 +185,7 @@ describe('API integration regressions', () => {
       expect(response.status).toBe(400);
     }
 
-    const missingMedia = await adminRequest('/api/media/does-not-exist/progress', {
+    const missingMedia = await request('/api/media/does-not-exist/progress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ position: 10, duration: 100 })
@@ -220,12 +194,12 @@ describe('API integration regressions', () => {
   });
 
   it('serves valid byte ranges and rejects malformed or unsatisfiable ranges', async () => {
-    const full = await adminRequest(`/api/media/${mediaId}/stream`);
+    const full = await request(`/api/media/${mediaId}/stream`);
     expect(full.status).toBe(200);
     expect(full.headers.get('Content-Length')).toBe('10');
     expect(await full.text()).toBe('0123456789');
 
-    const partial = await adminRequest(`/api/media/${mediaId}/stream`, {
+    const partial = await request(`/api/media/${mediaId}/stream`, {
       headers: { Range: 'bytes=2-5' }
     });
     expect(partial.status).toBe(206);
@@ -233,14 +207,14 @@ describe('API integration regressions', () => {
     expect(partial.headers.get('Content-Length')).toBe('4');
     expect(await partial.text()).toBe('2345');
 
-    const suffix = await adminRequest(`/api/media/${mediaId}/stream`, {
+    const suffix = await request(`/api/media/${mediaId}/stream`, {
       headers: { Range: 'bytes=-3' }
     });
     expect(suffix.status).toBe(206);
     expect(await suffix.text()).toBe('789');
 
     for (const range of ['bytes=20-30', 'bytes=5-2', 'bytes=0-1,4-5', 'items=0-1']) {
-      const response = await adminRequest(`/api/media/${mediaId}/stream`, {
+      const response = await request(`/api/media/${mediaId}/stream`, {
         headers: { Range: range }
       });
       expect(response.status).toBe(416);
@@ -249,14 +223,14 @@ describe('API integration regressions', () => {
   });
 
   it('carries the client and connection description into every segment URL', async () => {
-    const master = await adminRequest(
+    const master = await request(
       `/api/media/${mediaId}/hls/master.m3u8?client=chrome&network=remote`
     );
     const masterText = await master.text();
     expect(masterText).toContain('client=chrome');
     expect(masterText).toContain('network=remote');
 
-    const variant = await adminRequest(
+    const variant = await request(
       `/api/media/${mediaId}/hls/720p/index.m3u8?client=chrome&network=remote`
     );
     const variantText = await variant.text();
@@ -268,7 +242,7 @@ describe('API integration regressions', () => {
 
   it('advertises less bandwidth to a viewer over the internet', async () => {
     const bandwidths = async (query: string) => {
-      const response = await adminRequest(`/api/media/${mediaId}/hls/master.m3u8${query}`);
+      const response = await request(`/api/media/${mediaId}/hls/master.m3u8${query}`);
       const text = await response.text();
       return [...text.matchAll(/BANDWIDTH=(\d+)/g)].map((match) => Number(match[1]));
     };
@@ -284,44 +258,44 @@ describe('API integration regressions', () => {
     // A device that described nothing gets H.264 in MPEG-TS, so asking for a
     // fragmented segment means the playlist is stale rather than the segment
     // being missing — and it must not start an encoder to find that out.
-    const response = await adminRequest(`/api/media/${mediaId}/hls/720p/segment-0.m4s`);
+    const response = await request(`/api/media/${mediaId}/hls/720p/segment-0.m4s`);
     expect(response.status).toBe(404);
     expect(await response.text()).toContain('reload the playlist');
   });
 
   it('validates HLS, subtitle, hardware, and cache control requests', async () => {
-    const master = await adminRequest(`/api/media/${mediaId}/hls/master.m3u8`);
+    const master = await request(`/api/media/${mediaId}/hls/master.m3u8`);
     expect(master.status).toBe(200);
     expect(master.headers.get('Content-Type')).toContain('application/vnd.apple.mpegurl');
     expect(await master.text()).toContain(`/api/media/${mediaId}/hls/720p/index.m3u8`);
 
-    const invalidQuality = await adminRequest(`/api/media/${mediaId}/hls/ultra/index.m3u8`);
-    const invalidSegment = await adminRequest(
+    const invalidQuality = await request(`/api/media/${mediaId}/hls/ultra/index.m3u8`);
+    const invalidSegment = await request(
       `/api/media/${mediaId}/hls/720p/segment-0.ts.extra`
     );
-    const invalidSubtitle = await adminRequest(`/api/media/${mediaId}/subtitles/not-a-number`);
+    const invalidSubtitle = await request(`/api/media/${mediaId}/subtitles/not-a-number`);
     expect(invalidQuality.status).toBe(400);
     expect(invalidSegment.status).toBe(400);
     expect(invalidSubtitle.status).toBe(400);
 
-    const invalidHardware = await adminRequest('/api/system/hardware/accel', {
+    const invalidHardware = await request('/api/system/hardware/accel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accel: 'magic' })
     });
-    const invalidCache = await adminRequest('/api/system/cache/clear', {
+    const invalidCache = await request('/api/system/cache/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ maxAgeHours: -1 })
     });
-    const defaultCacheClean = await adminRequest('/api/system/cache/clear', { method: 'POST' });
+    const defaultCacheClean = await request('/api/system/cache/clear', { method: 'POST' });
     expect(invalidHardware.status).toBe(400);
     expect(invalidCache.status).toBe(400);
     expect(defaultCacheClean.status).toBe(200);
   });
 
   it('exposes safe transcode diagnostics and returns JSON for unknown API routes', async () => {
-    const diagnostics = await adminRequest('/api/system/transcodes');
+    const diagnostics = await request('/api/system/transcodes');
     expect(diagnostics.status).toBe(200);
     expect(await diagnostics.json()).toMatchObject({
       activeTranscodes: 0,
@@ -329,9 +303,7 @@ describe('API integration regressions', () => {
       sessions: []
     });
 
-    const missing = await server.fetch(new Request('http://localhost/api/does-not-exist', {
-      headers: { Authorization: `Bearer ${adminToken}` }
-    }));
+    const missing = await server.fetch(new Request('http://localhost/api/does-not-exist'));
     expect(missing.status).toBe(404);
     expect(missing.headers.get('Content-Type')).toContain('application/json');
     expect(await missing.json()).toEqual({ error: 'API route not found' });

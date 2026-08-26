@@ -1,6 +1,5 @@
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono } from 'hono';
 
-import { requireAdmin } from '../auth';
 import type { EndpointCandidate } from '../remote/endpoints';
 import { collectEndpointCandidates } from '../remote/endpoints';
 import { HeartbeatClient } from '../remote/control-plane-client';
@@ -9,7 +8,6 @@ import { orderCandidates } from '../remote/negotiation';
 import type { RemoteAccessStore } from '../db/remote-store';
 
 export interface RemoteAccessRouterDependencies {
-  requireAdmin?: MiddlewareHandler;
   heartbeat?: HeartbeatClient;
   collectEndpoints?: () => EndpointCandidate[];
   store?: RemoteAccessStore;
@@ -17,15 +15,12 @@ export interface RemoteAccessRouterDependencies {
 }
 
 export function createRemoteAccessRouter(dependencies: RemoteAccessRouterDependencies = {}): Hono {
-  const adminGate = dependencies.requireAdmin ?? requireAdmin;
   const identityOptions = dependencies.dataDir !== undefined ? { dataDir: dependencies.dataDir } : {};
   const endpointProvider = dependencies.collectEndpoints ?? (() => collectEndpointCandidates());
   const heartbeat = dependencies.heartbeat ??
     new HeartbeatClient({ getEndpoints: endpointProvider, ...(dependencies.dataDir !== undefined ? { dataDir: dependencies.dataDir } : {}) });
 
   const router = new Hono();
-
-  router.use('*', (c, next) => adminGate(c, next));
 
   router.get('/status', (c) => {
     c.header('Cache-Control', 'no-store');

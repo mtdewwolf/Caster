@@ -1,7 +1,6 @@
 import { Hono, type Context } from 'hono';
-import { getCurrentUserId, resolvePrincipal } from '../auth';
+import { getCurrentUserId } from '../identity';
 import { db, MediaModel } from '../db';
-import { AccessControlStore } from '../db/access-control';
 import {
   PlaylistConflictError,
   PlaylistNotFoundError,
@@ -9,14 +8,6 @@ import {
 } from '../db/playlist-store';
 
 const store = new PlaylistStore(db);
-const access = new AccessControlStore(db);
-
-function principalFor(c: Context) {
-  const principal = resolvePrincipal(c);
-  return principal
-    ? { userId: principal.id, role: principal.role, active: true as const }
-    : null;
-}
 
 async function readBody(c: Context): Promise<Record<string, unknown> | null> {
   try {
@@ -40,18 +31,9 @@ function playlistError(c: Context, error: unknown): Response {
 }
 
 function visibleMedia(c: Context, mediaId: string) {
-  const principal = principalFor(c);
-  if (!principal || !access.canAccessMedia(principal, mediaId)) return null;
-  const item = MediaModel.getById(
-    mediaId,
-    getCurrentUserId(c),
-    access.getLibraryScope(principal),
-    access.getContentRatingScope(principal)
-  );
+  const item = MediaModel.getById(mediaId, getCurrentUserId(c));
   if (!item) return null;
-  if (principal.role === 'admin') return item;
-  const { full_path: _fullPath, ...safe } = item;
-  return safe;
+  return item;
 }
 
 export const playlistRouter = new Hono();

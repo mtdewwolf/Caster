@@ -25,10 +25,10 @@ function testApp(options: { maxParticipants?: number; maxRoomsPerHost?: number }
   const app = new Hono();
   app.route('/api/watch-rooms', createWatchTogetherRouter({
     service,
-    getAuthenticatedUserId: (context) => context.req.header('x-test-user') ?? null,
+    getUserId: (context) => context.req.header('x-test-user') ?? 'public',
     resolveMedia: (context, mediaId) => {
-      const userId = context.req.header('x-test-user');
-      return userId && !denied.has(userId) ? media.get(mediaId) ?? null : null;
+      const userId = context.req.header('x-test-user') ?? 'public';
+      return !denied.has(userId) ? media.get(mediaId) ?? null : null;
     }
   }));
 
@@ -62,11 +62,11 @@ async function createRoom(
 }
 
 describe('Watch Together REST router', () => {
-  it('requires the injected authenticated principal and ACL-scoped media resolver', async () => {
+  it('uses the injected shared identity and media resolver', async () => {
     const { denied, request } = testApp();
     expect((await request('/api/watch-rooms', undefined, {
       method: 'POST', json: { mediaId: 'movie-1' }
-    })).status).toBe(401);
+    })).status).toBe(201);
     expect((await request('/api/watch-rooms', 'alice', {
       method: 'POST', json: { mediaId: 'missing' }
     })).status).toBe(404);

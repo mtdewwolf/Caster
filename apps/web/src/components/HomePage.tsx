@@ -90,20 +90,16 @@ function MediaRow({ title, blurb, items, onPlay, onSelect }: MediaRowProps) {
 }
 
 interface HomePageProps {
-  isAuthenticated: boolean;
   refreshToken: number;
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
-  onRequireAuthentication: () => void;
   onBrowseLibrary: () => void;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
-  isAuthenticated,
   refreshToken,
   onPlay,
   onSelect,
-  onRequireAuthentication,
   onBrowseLibrary
 }) => {
   const [rows, setRows] = useState<HomeRows>(EMPTY_ROWS);
@@ -126,7 +122,7 @@ export const HomePage: React.FC<HomePageProps> = ({
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, refreshToken, reloadToken]);
+  }, [refreshToken, reloadToken]);
 
   if (loading) {
     return (
@@ -159,16 +155,6 @@ export const HomePage: React.FC<HomePageProps> = ({
     );
   }
 
-  // Home is reachable before sign-in on an open server; a protected one should
-  // send the person to the login prompt rather than failing the request.
-  const requireAuth = (handler: (item: MediaItem) => void) => (item: MediaItem) => {
-    if (!isAuthenticated) {
-      onRequireAuthentication();
-      return;
-    }
-    handler(item);
-  };
-
   const populated = ROW_ORDER.filter(({ key }) => rows[key].length > 0);
 
   if (populated.length === 0) {
@@ -198,8 +184,8 @@ export const HomePage: React.FC<HomePageProps> = ({
           title={title}
           blurb={blurb}
           items={rows[key]}
-          onPlay={requireAuth(onPlay)}
-          onSelect={requireAuth(onSelect)}
+              onPlay={onPlay}
+          onSelect={onSelect}
         />
       ))}
     </div>

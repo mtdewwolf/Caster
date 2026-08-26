@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useFocusTrap } from '../features/a11y/focus-trap';
-import { X, FolderPlus, Trash2, RefreshCw, Cpu, Shield, ExternalLink, HardDrive, CheckCircle, FolderOpen, Users } from 'lucide-react';
+import { X, FolderPlus, Trash2, RefreshCw, Cpu, Shield, ExternalLink, HardDrive, CheckCircle, FolderOpen } from 'lucide-react';
 import type { Library, SystemHardwareStatus, ScanStatus } from '../types';
 import { api } from '../api';
 import { FolderBrowserModal } from './FolderBrowserModal';
-import { AccountManagement } from './AccountManagement';
 
 /**
  * Which video formats this server can produce, and which of them a graphics
@@ -42,7 +41,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
   const dialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(dialogRef, { onEscape: onClose });
 
-  const [activeTab, setActiveTab] = useState<'libraries' | 'accounts' | 'hardware' | 'tailscale'>('libraries');
+  const [activeTab, setActiveTab] = useState<'libraries' | 'hardware' | 'tailscale'>('libraries');
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
@@ -175,21 +174,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           >
             <HardDrive className="w-4 h-4" />
             <span>Media Libraries</span>
-          </button>
-
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'accounts'}
-            onClick={() => setActiveTab('accounts')}
-            className={`py-3 border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === 'accounts'
-                ? 'border-blue-500 text-blue-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>Accounts</span>
           </button>
 
           <button
@@ -376,9 +360,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           )}
 
           {/* Tab 2: Hardware Transcoding */}
-          {activeTab === 'accounts' ? <AccountManagement /> : null}
-
-          {/* Tab 3: Hardware Transcoding */}
           {activeTab === 'hardware' && (
             <div className="space-y-6">
               <div className="p-4 bg-slate-950/60 border border-white/5 rounded-xl space-y-3">

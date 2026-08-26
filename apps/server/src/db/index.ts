@@ -9,6 +9,7 @@ import {
   migrateLegacyWatchProgressToUsers,
   runDatabaseMigrations
 } from './migrations';
+import { PUBLIC_USER_ID } from '../identity';
 
 // Ensure data directory exists
 const DATA_DIR = process.env.MEDIA_DATA_DIR || path.join(process.cwd(), 'data');
@@ -610,7 +611,7 @@ export const MediaModel = {
   updateContentRating: (
     id: string,
     contentRating: string | null,
-    userId: string = 'admin'
+    userId: string = PUBLIC_USER_ID
   ): MediaItem | null => {
     const normalized = normalizeContentRating(contentRating);
     db.run(`

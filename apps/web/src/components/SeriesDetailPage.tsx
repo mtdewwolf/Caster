@@ -10,7 +10,6 @@ interface SeriesDetailPageProps {
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
   refreshToken: number;
-  isAdmin?: boolean;
 }
 
 export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
@@ -18,8 +17,7 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
   onBack,
   onPlay,
   onSelect,
-  refreshToken,
-  isAdmin = false
+  refreshToken
 }) => {
   const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
@@ -181,7 +179,6 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
             <MetadataPanel
               mediaId={anyEpisodeId}
               metadata={metadata}
-              isAdmin={isAdmin}
               onChange={setMetadata}
             />
           </div>

@@ -5,47 +5,32 @@ import path from 'path';
 import { initDatabase } from './db';
 import { apiRouter } from './routes/api';
 import { transcoder } from './transcoder/engine';
-import {
-  authRouter,
-  isAuthConfigured,
-  startSessionPruner
-} from './auth';
-import { devicesRouter } from './routes/devices';
 import { createRemoteAccessRouter } from './routes/remote-access';
 import { createConnectionRouter } from './routes/connection';
 import { collectEndpointCandidates } from './remote/endpoints';
 import { RemoteAccessStore } from './db/remote-store';
 import { autoScanRuntime } from './scanner/runtime';
-import { resolvePrincipal } from './auth';
 import { db } from './db';
-import {
-  apiRequestSecurity,
-  openModeIsExplicitlyEnabled
-} from './security/request-security';
+import { apiRequestSecurity } from './security/request-security';
 
 // Initialize SQLite database
 initDatabase();
 
 const app = new Hono();
 
-// Protected deployments require a principal for reads and streams, restrict
-// administration to admins, and enforce trusted-origin/CSRF checks. Explicit
-// local/open mode preserves account-free media browsing.
+// Caster is intentionally account-free. The API middleware only handles
+// trusted-origin reflection and CORS preflight responses.
 app.use('/api/*', apiRequestSecurity);
-app.route('/api/auth', authRouter);
-app.route('/api/auth/devices', devicesRouter);
 
-// Remote access administration. Mounted ahead of the generic /api router so
-// its admin-gated routes are not shadowed by the catch-all API handler.
+// Remote access is mounted ahead of the generic /api router so its routes are
+// not shadowed by the catch-all API handler.
 app.route('/api/remote-access', createRemoteAccessRouter({
   store: new RemoteAccessStore(db)
 }));
 
-// How clients discover the ways they can reach this server. Authenticated but
-// not admin-only: every client needs it to choose a route.
+// How clients discover the ways they can reach this server.
 app.route('/api/connection', createConnectionRouter({
-  collectEndpoints: () => collectEndpointCandidates(),
-  isAuthenticated: (c) => resolvePrincipal(c) !== null
+  collectEndpoints: () => collectEndpointCandidates()
 }));
 
 // Mount API router
@@ -85,7 +70,6 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
 if (import.meta.main) {
-  startSessionPruner();
   // Only libraries an operator has explicitly enabled are touched; with none
   // enabled this starts a timer that finds nothing to do.
   autoScanRuntime.start();
@@ -99,20 +83,7 @@ if (import.meta.main) {
   console.log(`   - VAAPI: ${hw.vaapiSupported ? '✓ Available' : '✗'}`);
   console.log(`======================================================\n`);
 
-  if (!isAuthConfigured()) {
-    if (openModeIsExplicitlyEnabled()) {
-      console.warn('SECURITY WARNING: CASTER_OPEN_MODE=true enables unauthenticated catalog and playback access.');
-      console.warn(`Anonymous clients are limited to CASTER_OPEN_NETWORKS=${process.env.CASTER_OPEN_NETWORKS ?? '127.0.0.0/8,::1/128'}.`);
-      console.warn('Administrative routes remain locked until the one-time owner setup is complete.');
-    } else {
-      console.warn('SECURITY NOTICE: This server has not been claimed. Complete owner setup in a browser from a local network.');
-      console.warn('Use CASTER_SETUP_NETWORKS only when the setup client is outside the built-in private-network ranges.');
-    }
-  }
-
-  if (process.env.CASTER_OPEN_MODE && !openModeIsExplicitlyEnabled()) {
-    console.warn(`SECURITY NOTICE: Ignoring CASTER_OPEN_MODE=${JSON.stringify(process.env.CASTER_OPEN_MODE)}; only the value "true" (case-insensitive) enables it.`);
-  }
+  console.warn('SECURITY NOTICE: Caster is running account-free; every API route is public.');
 }
 
 export default {

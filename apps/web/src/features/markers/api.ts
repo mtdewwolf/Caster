@@ -32,7 +32,6 @@ export interface MarkerAnalysisStatus {
 async function markerRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
-    credentials: 'same-origin',
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers
