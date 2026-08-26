@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { LockKeyhole, ShieldCheck } from 'lucide-react';
 
 interface OwnerSetupModalProps {
@@ -6,6 +7,9 @@ interface OwnerSetupModalProps {
 }
 
 export const OwnerSetupModal: React.FC<OwnerSetupModalProps> = ({ onSetup }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef);
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -32,7 +36,7 @@ export const OwnerSetupModal: React.FC<OwnerSetupModalProps> = ({ onSetup }) => 
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm">
-      <div role="dialog" aria-modal="true" aria-labelledby="owner-setup-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="owner-setup-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
         <div className="border-b border-white/10 bg-slate-950/50 px-6 py-6">
           <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-blue-500/30 bg-blue-600/15 text-blue-400">
             <LockKeyhole className="h-5 w-5" />

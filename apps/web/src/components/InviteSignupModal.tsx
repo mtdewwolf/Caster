@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { ShieldCheck, UserPlus, X } from 'lucide-react';
 import { api } from '../api';
 
@@ -9,6 +10,9 @@ interface InviteSignupModalProps {
 }
 
 export const InviteSignupModal: React.FC<InviteSignupModalProps> = ({ token, onClose, onSignup }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
   const [role, setRole] = useState<'admin' | 'viewer' | null>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -48,7 +52,7 @@ export const InviteSignupModal: React.FC<InviteSignupModalProps> = ({ token, onC
 
   return (
     <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
-      <div role="dialog" aria-modal="true" aria-labelledby="invite-signup-title" className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="invite-signup-title" className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
         <button type="button" onClick={onClose} aria-label="Close account signup" className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white"><X className="h-5 w-5" /></button>
         <div className="border-b border-white/10 bg-slate-950/50 px-6 py-6">
           <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-blue-500/30 bg-blue-600/15 text-blue-400"><UserPlus className="h-5 w-5" /></div>

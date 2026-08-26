@@ -164,14 +164,31 @@ export interface SystemHardwareStatus {
   vaapiSupported: boolean;
   activeTranscodes: number;
   maxConcurrentTranscodes: number;
+  /**
+   * Which output codecs this FFmpeg build can produce. HEVC and AV1 cut the
+   * bandwidth a stream needs substantially, but only for clients that decode
+   * them, and only if the server can encode them at all.
+   */
+  outputCodecs?: { h264: boolean; hevc: boolean; av1: boolean };
+  /**
+   * The subset of those that run on a GPU. Software HEVC and AV1 are slow
+   * enough that the distinction decides whether they get used at all.
+   */
+  hardwareCodecs?: { h264: boolean; hevc: boolean; av1: boolean };
 }
 
 export interface ActiveTranscodeSession {
   id: string;
   mediaId: string;
   quality: TranscodeQuality;
-  sequence: number;
   startedAt: string;
+  /** Segment the encoder was seeked to when the session began. */
+  startSegment: number;
+  /** Highest segment fully written and ready to serve. */
+  highestReadySegment: number;
+  segmentsProduced: number;
+  running: boolean;
+  idleForMs: number;
 }
 
 export interface TranscodeSessionStatus {

@@ -5,11 +5,14 @@ import type { EndpointCandidate } from '../remote/endpoints';
 import { collectEndpointCandidates } from '../remote/endpoints';
 import { HeartbeatClient } from '../remote/control-plane-client';
 import { getServerIdentity, type ServerIdentity } from '../remote/identity';
+import { orderCandidates } from '../remote/negotiation';
+import type { RemoteAccessStore } from '../db/remote-store';
 
 export interface RemoteAccessRouterDependencies {
   requireAdmin?: MiddlewareHandler;
   heartbeat?: HeartbeatClient;
   collectEndpoints?: () => EndpointCandidate[];
+  store?: RemoteAccessStore;
   dataDir?: string;
 }
 
@@ -45,9 +48,10 @@ export function createRemoteAccessRouter(dependencies: RemoteAccessRouterDepende
       identityError,
       lastHeartbeatAt: state.lastHeartbeatAt,
       lastHeartbeatResult: state.lastHeartbeatResult,
-      advertisedEndpoints: endpointProvider().map(({ kind, url, priority, tls }) => ({
-        kind, url, priority, tls
-      }))
+      advertisedEndpoints: orderCandidates(endpointProvider())
+        .map(({ kind, url, priority, tls }) => ({ kind, url, priority, tls })),
+      registration: dependencies.store?.getRegistration() ?? null,
+      recentHeartbeats: dependencies.store?.recentHeartbeats(10) ?? []
     });
   });
 

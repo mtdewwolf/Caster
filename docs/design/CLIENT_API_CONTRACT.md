@@ -1,6 +1,11 @@
 # Versioned client API contract (WP-E)
 
-Design for issue #34 [EPIC] Remote Access, Device Pairing & Native Clients — status: draft
+> **Superseded.** Caster uses Tailscale for remote access; there is no hosted
+> control plane and no Caster-operated relay. See
+> [REMOTE_ACCESS_DECISION.md](REMOTE_ACCESS_DECISION.md) for the decision and
+> what survived from this document. Kept for its reasoning, not as a plan.
+
+Design for issue #34 [EPIC] Remote Access, Device Pairing & Native Clients — status: superseded
 
 This document defines the stable, versioned contract that native clients
 (see [NATIVE_CLIENTS_ROADMAP.md](NATIVE_CLIENTS_ROADMAP.md)) and the web UI

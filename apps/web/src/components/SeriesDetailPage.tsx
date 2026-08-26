@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Play, CheckCircle2, Circle, Tv, RefreshCw } from 'lucide-react';
-import type { MediaItem, Series, SeriesSeason } from '../types';
+import type { MediaItem, MediaMetadata, Series, SeriesSeason } from '../types';
 import { api } from '../api';
+import { MetadataPanel, pickArtwork } from './MetadataPanel';
 
 interface SeriesDetailPageProps {
   seriesId: string;
@@ -9,6 +10,7 @@ interface SeriesDetailPageProps {
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
   refreshToken: number;
+  isAdmin?: boolean;
 }
 
 export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
@@ -16,8 +18,10 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
   onBack,
   onPlay,
   onSelect,
-  refreshToken
+  refreshToken,
+  isAdmin = false
 }) => {
+  const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
   const [seasons, setSeasons] = useState<SeriesSeason[]>([]);
   const [episodes, setEpisodes] = useState<MediaItem[]>([]);
@@ -38,6 +42,17 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
         setSeries(detailRes.series);
         setSeasons(detailRes.seasons || []);
         setEpisodes(episodesRes.items || []);
+
+        // Show metadata is stored against the series, and any episode of that
+        // series resolves to the same record.
+        const anyEpisode = episodesRes.items?.[0];
+        if (anyEpisode) {
+          api.getMediaMetadata(anyEpisode.id)
+            .then((result) => { if (!cancelled) setMetadata(result.metadata); })
+            .catch(() => { if (!cancelled) setMetadata(null); });
+        } else {
+          setMetadata(null);
+        }
       } catch (err) {
         if (!cancelled) {
           setSeries(null);
@@ -88,6 +103,11 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
       ? Math.round((series.watched_count / series.episode_count) * 100)
       : 0;
 
+  const seriesBackdrop = pickArtwork(metadata, 'backdrop')
+    ?? pickArtwork(metadata, 'poster')
+    ?? series.poster_path;
+  const anyEpisodeId = episodes[0]?.id;
+
   // Find next unwatched episode for quick play
   const resumeEpisode =
     episodes.find(
@@ -108,9 +128,9 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
       {/* Header */}
       <div className="relative mt-4 rounded-2xl overflow-hidden border border-white/5 bg-slate-900/60">
         <div className="relative aspect-[21/9] max-h-[320px] w-full bg-slate-950">
-          {series.poster_path ? (
+          {seriesBackdrop ? (
             <img
-              src={series.poster_path}
+              src={seriesBackdrop}
               alt={series.title}
               className="w-full h-full object-cover opacity-60 filter blur-[1px]"
             />
@@ -155,6 +175,17 @@ export const SeriesDetailPage: React.FC<SeriesDetailPageProps> = ({
             )}
           </div>
         </div>
+
+        {anyEpisodeId && (
+          <div className="border-t border-white/5 p-6">
+            <MetadataPanel
+              mediaId={anyEpisodeId}
+              metadata={metadata}
+              isAdmin={isAdmin}
+              onChange={setMetadata}
+            />
+          </div>
+        )}
       </div>
 
       {/* Seasons & Episodes */}

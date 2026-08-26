@@ -8,12 +8,30 @@ import { EXTERNAL_SUBTITLE_INDEX_BASE, findExternalSubtitles } from './subtitles
 import { ensureMediaThumbnail } from './thumbnails';
 import { db, ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
 import { MediaIdentityStore } from '../db/media-identity-store';
+import { TitleStore } from '../db/title-store';
+import { ScanLockStore } from '../db/scan-lock-store';
 import { enqueueMediaMarkerAnalysis } from '../markers';
+import { metadataEnrichment } from '../metadata/runtime';
+import { metadataStore } from '../metadata/runtime';
 import type { Library, MediaItem } from '../types';
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.ts', '.m4v', '.flv', '.wmv', '.iso']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.aac', '.m4a', '.wav', '.ogg', '.opus', '.wma', '.alac']);
 const mediaIdentityStore = new MediaIdentityStore(db);
+const titleStore = new TitleStore(db);
+const scanLocks = new ScanLockStore(db);
+
+export class LibraryBusyError extends Error {
+  constructor(libraryId: string) {
+    super(`Library ${libraryId} is already being scanned`);
+    this.name = 'LibraryBusyError';
+  }
+}
+
+/** Clears locks left behind by a process that stopped mid-scan. */
+export function releaseAbandonedScanLocks(): number {
+  return scanLocks.releaseStale();
+}
 
 export interface ScanStatus {
   isScanning: boolean;
@@ -52,8 +70,10 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
     throw new Error(`Library ${libraryId} not found`);
   }
 
-  if (scanStatus.isScanning) {
-    throw new Error('A scan is already in progress');
+  // The guard is per-library and outlives this process, so scanning films no
+  // longer blocks scanning music and a crash mid-scan cannot wedge a library.
+  if (!scanLocks.acquire(libraryId)) {
+    throw new LibraryBusyError(libraryId);
   }
 
   scanStatus.isScanning = true;
@@ -95,6 +115,9 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
           recordScanError(`Error processing ${filePath}: ${errorMessage(error)}`, error);
         }
         scanStatus.processedFiles++;
+        // Report in periodically so a long scan is never mistaken for a
+        // crashed one and have its lock taken away.
+        if (scanStatus.processedFiles % 50 === 0) scanLocks.heartbeat(library.id);
       }
     }
 
@@ -104,6 +127,12 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
     if (discovery.complete && staged) {
       MediaModel.reconcileLibraryScan(library.id, scanGenerationId);
       LibraryModel.updateLastScanned(library.id);
+      try {
+        titleStore.pruneEmpty();
+        metadataStore.pruneOrphanedMedia();
+      } catch (error) {
+        recordScanError(`Error pruning orphaned metadata for ${library.path}: ${errorMessage(error)}`, error);
+      }
     }
 
     return {
@@ -119,6 +148,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
   } finally {
     scanStatus.isScanning = false;
     scanStatus.libraryId = null;
+    scanLocks.release(libraryId);
   }
 }
 
@@ -277,7 +307,22 @@ async function processMediaFile(
   };
 
   MediaModel.upsert(mediaItem);
+  // Group this file under the work it belongs to, and normalise its streams
+  // out of the JSON blob. Both are derived, so a rescan is idempotent.
+  titleStore.linkMedia(fileId, {
+    libraryId: library.id,
+    type: mediaItem.type,
+    title: mediaItem.title,
+    seriesTitle: mediaItem.series_title,
+    seasonNumber: mediaItem.season_number,
+    episodeNumber: mediaItem.episode_number,
+    year: mediaItem.year
+  });
+  titleStore.replaceStreams(fileId, streams);
   ExternalSubtitleModel.replaceAllForMedia(fileId, externalTracks);
+  // Descriptive metadata is enrichment, not indexing: queued in the background
+  // so a slow or missing provider never delays or fails the scan.
+  metadataEnrichment.enqueue(mediaItem);
   if (mediaItem.type === 'episode') {
     enqueueMediaMarkerAnalysis({
       mediaId: mediaItem.id,

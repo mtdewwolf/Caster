@@ -248,6 +248,47 @@ describe('API integration regressions', () => {
     }
   });
 
+  it('carries the client and connection description into every segment URL', async () => {
+    const master = await adminRequest(
+      `/api/media/${mediaId}/hls/master.m3u8?client=chrome&network=remote`
+    );
+    const masterText = await master.text();
+    expect(masterText).toContain('client=chrome');
+    expect(masterText).toContain('network=remote');
+
+    const variant = await adminRequest(
+      `/api/media/${mediaId}/hls/720p/index.m3u8?client=chrome&network=remote`
+    );
+    const variantText = await variant.text();
+    // A segment planned for a different device than its playlist was is how a
+    // stream ends up with a codec the player cannot decode.
+    expect(variantText).toContain('client=chrome');
+    expect(variantText).toContain('network=remote');
+  });
+
+  it('advertises less bandwidth to a viewer over the internet', async () => {
+    const bandwidths = async (query: string) => {
+      const response = await adminRequest(`/api/media/${mediaId}/hls/master.m3u8${query}`);
+      const text = await response.text();
+      return [...text.matchAll(/BANDWIDTH=(\d+)/g)].map((match) => Number(match[1]));
+    };
+
+    const lan = await bandwidths('?client=chrome&network=lan');
+    const remote = await bandwidths('?client=chrome&network=remote');
+
+    expect(lan.length).toBeGreaterThan(0);
+    expect(lan[0]!).toBeGreaterThan(remote[0]!);
+  });
+
+  it('turns away a segment request whose packaging does not match the stream', async () => {
+    // A device that described nothing gets H.264 in MPEG-TS, so asking for a
+    // fragmented segment means the playlist is stale rather than the segment
+    // being missing — and it must not start an encoder to find that out.
+    const response = await adminRequest(`/api/media/${mediaId}/hls/720p/segment-0.m4s`);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain('reload the playlist');
+  });
+
   it('validates HLS, subtitle, hardware, and cache control requests', async () => {
     const master = await adminRequest(`/api/media/${mediaId}/hls/master.m3u8`);
     expect(master.status).toBe(200);

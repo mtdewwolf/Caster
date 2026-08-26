@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useReducer, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import {
   Play,
@@ -16,7 +16,8 @@ import {
   Check,
   Users,
   Copy,
-  LogOut
+  LogOut,
+  X
 } from 'lucide-react';
 import type { MediaItem, MediaStreamTrack, PlaybackDescriptor } from '../types';
 import { api, type CastPlaybackAccess } from '../api';
@@ -31,6 +32,24 @@ import {
   type CastableVideoElement,
   type CastConnectionState
 } from '../features/casting/remote-playback';
+import {
+  autoplayReducer,
+  DEFAULT_AUTOPLAY_SECONDS,
+  initialAutoplayState,
+  isCountdownVisible,
+  shouldAdvance
+} from '../features/playback/autoplay';
+import {
+  audioModeFor,
+  browserSurroundProbe,
+  withAudioMode
+} from '../features/playback/audio-capability';
+import { isImageSubtitle } from '../features/playback/subtitle-capability';
+import {
+  browserCapabilityProbe,
+  detectClientCapabilities,
+  withCapabilities
+} from '../features/playback/client-capabilities';
 
 interface VideoPlayerProps {
   item: MediaItem;
@@ -95,6 +114,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   } catch {}
 
   const subtitleTracks = streams.filter((s) => s.codec_type === 'subtitle');
+
+  // Image subtitles are pictures, not text: the only way to show them is to
+  // have the server draw them onto the video, which means an HLS transcode.
+  const burnedInSubtitle = subtitleTracks.find((track) =>
+    track.index === selectedSubtitle && isImageSubtitle(track.codec_name) && !track.is_external
+  );
   const audioTracks = streams.filter((s) => s.codec_type === 'audio');
 
   useEffect(() => {
@@ -187,9 +212,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       : 0;
 
     if (streamMode === 'hls') {
-      const hlsUrl = selectedQuality === 'auto'
+      const baseHlsUrl = selectedQuality === 'auto'
         ? castPlayback?.hlsUrl ?? `/api/media/${item.id}/hls/master.m3u8`
         : castPlayback?.hlsQualityUrls[selectedQuality] ?? `/api/media/${item.id}/hls/${selectedQuality}/index.m3u8`;
+
+      // Ask for surround only when this browser can actually decode it; the
+      // server downmixes to stereo for anyone who does not ask.
+      const audioUrl = withAudioMode(baseHlsUrl, audioModeFor(browserSurroundProbe(video)));
+      const subtitledUrl = burnedInSubtitle
+        ? `${audioUrl}${audioUrl.includes('?') ? '&' : '?'}subtitle=${burnedInSubtitle.index}`
+        : audioUrl;
+      // Telling the server what this browser decodes is what lets it send HEVC
+      // or AV1, which carry the same picture in roughly half the bandwidth.
+      // Without it every stream is H.264 at a bitrate chosen for nobody.
+      // Ask the decoder that will actually play this stream: Safari plays the
+      // playlist itself, everything else goes through Media Source Extensions,
+      // and the two do not support the same codecs.
+      const nativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+      const hlsUrl = withCapabilities(
+        subtitledUrl,
+        detectClientCapabilities(browserCapabilityProbe(video, nativeHls ? 'native' : 'mse'))
+      );
 
       // Prefer the browser's native HLS pipeline when available. In Safari it
       // keeps the real playlist URL visible to AirPlay instead of replacing it
@@ -234,7 +277,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         hlsRef.current = null;
       }
     };
-  }, [item.id, streamMode, selectedQuality, castPlayback]);
+  }, [item.id, streamMode, selectedQuality, castPlayback, burnedInSubtitle?.index]);
 
   useEffect(() => {
     if (selectedAudio === null) return;
@@ -383,10 +426,43 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     currentTime >= marker.startSeconds && currentTime < marker.endSeconds
   ));
 
+  const [playbackSummary, setPlaybackSummary] = useState<string | null>(null);
+  const [autoplay, dispatchAutoplay] = useReducer(autoplayReducer, initialAutoplayState);
+
+  // Ask the server what it will do for this device, and why. The answer is
+  // what the badge shows instead of a bare protocol name.
+  useEffect(() => {
+    let cancelled = false;
+    setPlaybackSummary(null);
+    const declared = detectClientCapabilities(browserCapabilityProbe(videoRef.current));
+    api.getMediaDetail(item.id, withCapabilities('', declared).replace(/^\?/, ''))
+      .then((detail) => { if (!cancelled) setPlaybackSummary(detail.playback?.summary ?? null); })
+      .catch(() => { if (!cancelled) setPlaybackSummary(null); });
+    return () => { cancelled = true; };
+  }, [item.id]);
+  const nextEpisode = playbackDescriptor.nextEpisode as MediaItem | null;
+  const canAutoAdvance = Boolean(!watchRoom && nextEpisode && onAdvance);
+
+  // A new item clears any earlier decision to cancel.
+  useEffect(() => {
+    dispatchAutoplay({ type: 'reset' });
+  }, [item.id]);
+
+  useEffect(() => {
+    if (!isCountdownVisible(autoplay)) return;
+    const timer = window.setInterval(() => dispatchAutoplay({ type: 'tick' }), 1000);
+    return () => window.clearInterval(timer);
+  }, [autoplay.status]);
+
+  useEffect(() => {
+    if (!shouldAdvance(autoplay)) return;
+    if (canAutoAdvance && nextEpisode && onAdvance) onAdvance(nextEpisode);
+  }, [autoplay.status, canAutoAdvance, nextEpisode, onAdvance]);
+
   const handleSkipMarker = () => {
     if (!activeMarker || !canControlTimeline) return;
-    if (!watchRoom && activeMarker.type === 'credits' && playbackDescriptor.nextEpisode && onAdvance) {
-      onAdvance(playbackDescriptor.nextEpisode);
+    if (activeMarker.type === 'credits' && canAutoAdvance) {
+      dispatchAutoplay({ type: 'advance-now' });
       return;
     }
     const video = videoRef.current;
@@ -549,7 +625,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onTimeUpdate={handleTimeUpdate}
         onEnded={() => {
           setIsPlaying(false);
-          if (!watchRoom && playbackDescriptor.nextEpisode && onAdvance) onAdvance(playbackDescriptor.nextEpisode);
+          if (canAutoAdvance) dispatchAutoplay({ type: 'playback-ended' });
         }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
@@ -558,7 +634,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         playsInline
         disableRemotePlayback={false}
       >
-        {selectedSubtitle !== null && (
+        {selectedSubtitle !== null && !burnedInSubtitle && (
           <track
             kind="subtitles"
             label="Subtitles"
@@ -578,6 +654,62 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             ? 'Skip Intro'
             : playbackDescriptor.nextEpisode ? 'Next Episode' : 'Skip Credits'}
         </button>
+      )}
+
+      {isCountdownVisible(autoplay) && nextEpisode && (
+        <div
+          role="dialog"
+          aria-live="polite"
+          aria-label="Up next"
+          className="absolute bottom-28 right-6 w-80 max-w-[calc(100vw-3rem)] rounded-xl border border-white/15 bg-black/85 p-4 shadow-2xl backdrop-blur"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Up next</p>
+              <p className="mt-1 truncate text-sm font-bold text-white">{nextEpisode.title}</p>
+              {nextEpisode.season_number !== undefined && nextEpisode.episode_number !== undefined && (
+                <p className="text-xs text-slate-400">
+                  Season {nextEpisode.season_number}, Episode {nextEpisode.episode_number}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => dispatchAutoplay({ type: 'cancel' })}
+              aria-label="Cancel autoplay"
+              className="rounded p-1 text-slate-400 transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-white"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/15">
+            <div
+              className="h-full bg-white transition-[width] duration-1000 ease-linear"
+              style={{ width: `${(autoplay.secondsRemaining / DEFAULT_AUTOPLAY_SECONDS) * 100}%` }}
+            />
+          </div>
+
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => dispatchAutoplay({ type: 'advance-now' })}
+              className="flex-1 rounded-lg bg-white px-3 py-2 text-xs font-bold text-black transition-colors hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-white"
+            >
+              Play now
+            </button>
+            <button
+              type="button"
+              onClick={() => dispatchAutoplay({ type: 'cancel' })}
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white"
+            >
+              Cancel
+            </button>
+            <span className="w-6 text-right text-xs font-semibold tabular-nums text-slate-300">
+              {autoplay.secondsRemaining}s
+            </span>
+          </div>
+        </div>
       )}
 
       {/* Top Header Overlay */}
@@ -615,7 +747,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   HDR
                 </span>
               )}
-              <span>{streamMode === 'direct' ? '⚡ Direct Play' : `🔥 HLS (${selectedQuality})`}</span>
+              <span title={playbackSummary ?? undefined}>
+                {playbackSummary ?? (streamMode === 'direct' ? 'Playing directly' : `Converting (${selectedQuality})`)}
+              </span>
             </div>
           </div>
         </div>
@@ -802,12 +936,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                       key={sub.index}
                       onClick={() => {
                         setSelectedSubtitle(sub.index);
+                        // Direct Play cannot show an image subtitle, so picking
+                        // one switches to the stream the server can draw on.
+                        if (isImageSubtitle(sub.codec_name) && !sub.is_external) {
+                          setStreamMode('hls');
+                        }
                         watchConnection.sendPreferences({ subtitleTrackIndex: sub.index });
                         setShowSubtitleMenu(false);
                       }}
                       className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 flex items-center justify-between"
                     >
-                      <span className="truncate">{sub.language || sub.title || `Track ${sub.index}`}</span>
+                      <span className="truncate">
+                        {sub.language || sub.title || `Track ${sub.index}`}
+                        {isImageSubtitle(sub.codec_name) && !sub.is_external && (
+                          <span className="ml-1.5 text-[10px] uppercase tracking-wide text-slate-500">
+                            image
+                          </span>
+                        )}
+                      </span>
                       {selectedSubtitle === sub.index && <Check className="w-3.5 h-3.5 text-blue-400" />}
                     </button>
                   ))}

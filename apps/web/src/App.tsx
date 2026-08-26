@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2 } from 'lucide-react';
+import { Play, Sparkles, Film, Tv, RefreshCw, FolderPlus, Info, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type { MediaItem, Series, SystemHardwareStatus, ScanStatus } from './types';
 import { api, AUTH_INVALIDATED_EVENT } from './api';
 import type { AuthSession } from './api';
@@ -16,6 +16,14 @@ import { LoginModal } from './components/LoginModal';
 import { ProfileSwitchModal } from './components/ProfileSwitchModal';
 import { OwnerSetupModal } from './components/OwnerSetupModal';
 import { InviteSignupModal } from './components/InviteSignupModal';
+import {
+  DEFAULT_LIBRARY_FILTERS,
+  LibraryFilterBar,
+  type LibraryFilters,
+  countActiveFilters
+} from './components/LibraryFilterBar';
+import { describeError, useToast } from './components/Toaster';
+import { HomePage } from './components/HomePage';
 import { MusicLibraryPage } from './features/music/MusicLibraryPage';
 import {
   createInitialMusicQueueState,
@@ -34,15 +42,18 @@ import {
 const MEDIA_PAGE_SIZE = 50;
 
 export const App: React.FC = () => {
+  const { notify } = useToast();
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [mediaTotal, setMediaTotal] = useState<number>(0);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [activeType, setActiveType] = useState<string>('');
-  const [view, setView] = useState<AppView>('library');
+  const [view, setView] = useState<AppView>('home');
   const [refreshToken, setRefreshToken] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
-  const [selectedResolution, setSelectedResolution] = useState<string>('');
+  const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_LIBRARY_FILTERS);
+  const [genres, setGenres] = useState<string[]>([]);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [playingItem, setPlayingItem] = useState<MediaItem | null>(null);
   const [watchRoom, setWatchRoom] = useState<WatchRoomLaunch | null>(null);
@@ -154,12 +165,17 @@ export const App: React.FC = () => {
     const requestId = ++mediaRequestId.current;
     setLoading(true);
     setLoadingMore(false);
+    setMediaError(null);
     try {
       const [mediaRes, cwRes, sysRes, scanRes] = await Promise.all([
         api.getMedia({
           type: activeType || undefined,
           search: debouncedSearchQuery || undefined,
-          resolution: selectedResolution || undefined,
+          resolution: filters.resolution || undefined,
+          genre: filters.genre || undefined,
+          watched: filters.watched,
+          hdr: filters.hdrOnly,
+          sort: filters.sort,
           limit: MEDIA_PAGE_SIZE,
           offset: 0
         }),
@@ -169,13 +185,24 @@ export const App: React.FC = () => {
       ]);
 
       if (requestId !== mediaRequestId.current) return;
+      setMediaError(null);
       setMediaItems(mediaRes.items || []);
       setMediaTotal(mediaRes.total || 0);
       setContinueWatching(cwRes || []);
       setHardware(sysRes?.hardware ?? null);
       setScanStatus(scanRes);
     } catch (err) {
-      console.error('Error fetching media:', err);
+      if (requestId !== mediaRequestId.current) return;
+      // A silent console.error leaves an empty grid that reads as "no media".
+      // Say what failed, and give the person a way to try again.
+      const message = describeError(err, 'The server did not respond.');
+      setMediaError(message);
+      notify({
+        title: 'Could not load your library',
+        description: message,
+        tone: 'error',
+        action: { label: 'Try again', onSelect: () => { void loadMedia(); } }
+      });
     } finally {
       if (requestId === mediaRequestId.current) setLoading(false);
     }
@@ -190,7 +217,11 @@ export const App: React.FC = () => {
       const mediaRes = await api.getMedia({
         type: activeType || undefined,
         search: debouncedSearchQuery || undefined,
-        resolution: selectedResolution || undefined,
+        resolution: filters.resolution || undefined,
+        genre: filters.genre || undefined,
+        watched: filters.watched,
+        hdr: filters.hdrOnly,
+        sort: filters.sort,
         limit: MEDIA_PAGE_SIZE,
         offset: mediaItems.length
       });
@@ -202,7 +233,12 @@ export const App: React.FC = () => {
       });
       setMediaTotal(mediaRes.total || 0);
     } catch (err) {
-      console.error('Error fetching more media:', err);
+      notify({
+        title: 'Could not load more items',
+        description: describeError(err, 'The server did not respond.'),
+        tone: 'error',
+        action: { label: 'Try again', onSelect: () => { void loadMoreMedia(); } }
+      });
     } finally {
       if (requestId === mediaRequestId.current) setLoadingMore(false);
     }
@@ -286,7 +322,21 @@ export const App: React.FC = () => {
       return;
     }
     loadMedia();
-  }, [activeType, debouncedSearchQuery, selectedResolution, authSession?.authenticated, authSession?.user?.id, authSession?.user?.role]);
+  }, [activeType, debouncedSearchQuery, filters, authSession?.authenticated, authSession?.user?.id, authSession?.user?.role]);
+
+  // Genres come from what is actually indexed, so the menu never offers a
+  // filter that would return nothing. A failure here just hides the menu.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setGenres([]);
+      return;
+    }
+    let cancelled = false;
+    api.getGenres({ type: activeType || undefined })
+      .then((names) => { if (!cancelled) setGenres(names); })
+      .catch(() => { if (!cancelled) setGenres([]); });
+    return () => { cancelled = true; };
+  }, [activeType, isAuthenticated, refreshToken]);
 
   useEffect(() => {
     if (!scanStatus?.isScanning) return;
@@ -462,6 +512,18 @@ export const App: React.FC = () => {
               Sign in
             </button>
           </div>
+        ) : view === 'home' ? (
+          <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-8">
+            <HomePage
+              key={principalKey}
+              isAuthenticated={isAuthenticated}
+              refreshToken={refreshToken}
+              onPlay={(i) => setPlayingItem(i)}
+              onSelect={(i) => setSelectedItem(i)}
+              onRequireAuthentication={() => openLogin(false)}
+              onBrowseLibrary={() => { setView('library'); setActiveType(''); }}
+            />
+          </div>
         ) : view === 'progress' ? (
           <div className="mt-4">
             <ProgressPage
@@ -478,7 +540,7 @@ export const App: React.FC = () => {
         ) : (
           <>
         {/* Hero Spotlight (shown if items exist and not actively searching) */}
-        {heroItem && !searchQuery && !activeType && !selectedResolution && (
+        {heroItem && !searchQuery && !activeType && countActiveFilters(filters) === 0 && (
           <div className="relative aspect-[21/9] max-h-[460px] w-full bg-slate-950 overflow-hidden border-b border-white/5">
             {heroItem.poster_path ? (
               <img
@@ -570,6 +632,7 @@ export const App: React.FC = () => {
               <SeriesDetailPage
                 key={`${principalKey}:${selectedSeriesId}`}
                 seriesId={selectedSeriesId}
+                isAdmin={isAdmin}
                 refreshToken={refreshToken}
                 onBack={() => setSelectedSeriesId(null)}
                 onPlay={(i) => setPlayingItem(i)}
@@ -608,37 +671,36 @@ export const App: React.FC = () => {
             )
           ) : (
             <>
-          {/* Filter Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-slate-400 font-medium">Filter Resolution:</span>
-              {['', '4K', '1080p', '720p'].map((res) => (
-                <button
-                  key={res}
-                  onClick={() => setSelectedResolution(res)}
-                  className={`px-2.5 py-1 rounded-lg transition-colors ${
-                    selectedResolution === res
-                      ? 'bg-blue-600 text-white font-semibold'
-                      : 'bg-slate-900 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {res === '' ? 'All' : res}
-                </button>
-              ))}
-            </div>
-
-            <div className="text-xs text-slate-400">
-              Showing <span className="font-semibold text-slate-200">{mediaItems.length}</span>
-              {' of '}
-              <span className="font-semibold text-slate-200">{mediaTotal}</span> item(s)
-            </div>
-          </div>
+          <LibraryFilterBar
+            filters={filters}
+            genres={genres}
+            shownCount={mediaItems.length}
+            totalCount={mediaTotal}
+            onChange={setFilters}
+          />
 
           {/* Media Grid / Empty States */}
           {loading ? (
             <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-500">
               <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
               <span className="text-xs">Loading media from TrueNAS...</span>
+            </div>
+          ) : mediaError ? (
+            <div
+              role="alert"
+              className="py-20 flex flex-col items-center justify-center text-center p-8 bg-rose-950/20 border border-dashed border-rose-500/30 rounded-2xl max-w-lg mx-auto"
+            >
+              <div className="p-4 bg-rose-500/10 text-rose-400 rounded-full mb-3">
+                <AlertTriangle className="w-8 h-8" />
+              </div>
+              <h3 className="text-base font-bold text-white mb-1">Could not load your library</h3>
+              <p className="text-xs text-rose-200/80 mb-4 max-w-xs leading-relaxed">{mediaError}</p>
+              <button
+                onClick={() => { void loadMedia(); }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-lg transition-all"
+              >
+                Try again
+              </button>
             </div>
           ) : mediaItems.length === 0 ? (
             <div className="py-20 flex flex-col items-center justify-center text-center p-8 bg-slate-900/40 border border-dashed border-white/10 rounded-2xl max-w-lg mx-auto">
@@ -733,6 +795,12 @@ export const App: React.FC = () => {
       {selectedItem && (
         <MediaDetailModal
           item={selectedItem}
+          isAdmin={isAdmin}
+          onSelectVersion={(mediaId) => {
+            // Swap the detail view to the chosen file; progress follows the
+            // title, so the resume point is unchanged.
+            void api.getMediaItem(mediaId).then(setSelectedItem).catch(() => {});
+          }}
           onClose={() => setSelectedItem(null)}
           onPlay={(i) => {
             setSelectedItem(null);

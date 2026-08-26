@@ -1,0 +1,16 @@
+# Normalise line endings so a Windows checkout does not show every file as modified.
+# After adding this file, run once: git add --renormalize . && git commit
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.mp4 binary
+*.mkv binary
+*.mp3 binary
+*.flac binary
+*.woff binary
+*.woff2 binary

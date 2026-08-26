@@ -141,7 +141,7 @@ describe('MetadataProviderRegistry', () => {
 });
 
 describe('scanner metadata adapter', () => {
-  it('builds vendor-neutral movie and episode match requests', () => {
+  it('builds vendor-neutral movie and show match requests', () => {
     expect(createMetadataMatchRequest({
       type: 'movie',
       title: 'Arrival',
@@ -153,18 +153,21 @@ describe('scanner metadata adapter', () => {
       minimumConfidence: DEFAULT_AUTOMATIC_MATCH_CONFIDENCE
     });
 
+    // Episodes resolve to their show: the descriptive metadata a person wants
+    // on a TV item belongs to the series, and no v1 provider (TMDB included)
+    // implements episode-level lookup — asking for one throws.
     expect(createMetadataMatchRequest({
       type: 'episode',
       title: 'Pilot',
       series_title: 'Example Show',
       season_number: 1,
-      episode_number: 1
+      episode_number: 1,
+      year: 2019
     }, 0.95)).toEqual({
-      entityType: 'episode',
-      title: 'Pilot',
+      entityType: 'show',
+      title: 'Example Show',
       seriesTitle: 'Example Show',
-      seasonNumber: 1,
-      episodeNumber: 1,
+      year: 2019,
       minimumConfidence: 0.95
     });
   });

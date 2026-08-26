@@ -1,9 +1,37 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { X, FolderPlus, Trash2, RefreshCw, Cpu, Shield, ExternalLink, HardDrive, CheckCircle, FolderOpen, Users } from 'lucide-react';
 import type { Library, SystemHardwareStatus, ScanStatus } from '../types';
 import { api } from '../api';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { AccountManagement } from './AccountManagement';
+
+/**
+ * Which video formats this server can produce, and which of them a graphics
+ * card handles.
+ *
+ * The distinction is the whole story. H.265 and AV1 send the same picture in
+ * roughly half the data, but a server making them without a graphics card can
+ * fall behind the person watching — so they are used freely on a GPU, and over
+ * the internet only where the bandwidth saved is worth the effort.
+ */
+function describeOutputCodecs(hardware: SystemHardwareStatus | null): string {
+  const available = hardware?.outputCodecs;
+  if (!available) return 'Unknown';
+
+  const accelerated = hardware?.hardwareCodecs;
+  const names: Array<['h264' | 'hevc' | 'av1', string]> = [
+    ['h264', 'H.264'],
+    ['hevc', 'H.265'],
+    ['av1', 'AV1']
+  ];
+
+  const listed = names
+    .filter(([key]) => available[key])
+    .map(([key, label]) => (accelerated?.[key] ? `${label} (GPU)` : label));
+
+  return listed.length > 0 ? listed.join(', ') : 'None';
+}
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -11,6 +39,9 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrariesChanged }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
   const [activeTab, setActiveTab] = useState<'libraries' | 'accounts' | 'hardware' | 'tailscale'>('libraries');
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [hardware, setHardware] = useState<SystemHardwareStatus | null>(null);
@@ -107,7 +138,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div
+      <div ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
@@ -411,6 +442,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                 <div className="flex justify-between text-slate-400">
                   <span>Active Transcode Streams:</span>
                   <span className="font-mono text-slate-200">{hardware?.activeTranscodes || 0}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Video Formats This Server Can Make:</span>
+                  <span className="font-mono text-slate-200">{describeOutputCodecs(hardware)}</span>
                 </div>
               </div>
             </div>

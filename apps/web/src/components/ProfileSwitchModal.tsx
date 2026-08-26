@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { KeyRound, UsersRound, X } from 'lucide-react';
 
 interface ProfileSwitchModalProps {
@@ -12,6 +13,9 @@ export const ProfileSwitchModal: React.FC<ProfileSwitchModalProps> = ({
   onClose,
   onSwitch
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -33,7 +37,7 @@ export const ProfileSwitchModal: React.FC<ProfileSwitchModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-      <div role="dialog" aria-modal="true" aria-labelledby="switch-profile-title" data-testid="profile-switch-dialog" className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="switch-profile-title" data-testid="profile-switch-dialog" className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
         <button type="button" onClick={onClose} aria-label="Close profile switch" className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white">
           <X className="h-5 w-5" />
         </button>
