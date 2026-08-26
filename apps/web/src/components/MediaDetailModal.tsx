@@ -10,7 +10,6 @@ interface MediaDetailModalProps {
   item: MediaItem;
   onClose: () => void;
   onPlay: (item: MediaItem) => void;
-  isAdmin?: boolean;
   /** Switch the detail view to another file of the same title. */
   onSelectVersion?: (mediaId: string) => void;
 }
@@ -19,7 +18,6 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   item,
   onClose,
   onPlay,
-  isAdmin = false,
   onSelectVersion
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -220,7 +218,6 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           <MetadataPanel
             mediaId={item.id}
             metadata={metadata}
-            isAdmin={isAdmin}
             onChange={setMetadata}
           />
 

@@ -146,7 +146,7 @@ describe('Watch Together WebSocket route', () => {
     app.route('/rooms', createWatchTogetherRouter({
       service,
       realtimeHub: hub,
-      getAuthenticatedUserId: (context) => context.req.query('test-user') || null,
+      getUserId: (context) => context.req.query('test-user') || 'public',
       resolveMedia: (_context, mediaId) => mediaId === 'movie-1'
         ? { id: mediaId, duration: 100 }
         : null

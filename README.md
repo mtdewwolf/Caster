@@ -27,21 +27,15 @@ bun run dev:server
 bun run dev:web
 ```
 
-Open `http://localhost:3000` and complete the one-time owner setup. The chosen
-username and salted password hash are stored in the server's local
-`data/media.db`; the setup endpoint closes permanently after the first success.
-When setup is complete, browsing and streaming require an account;
-filesystem, library, scan, and system administration require an admin. API
-tokens can be assigned to an existing account through the authenticated account
-API. Cross-origin web clients must also list their exact origin in
-`CASTER_TRUSTED_ORIGINS`.
+Open `http://localhost:3000`. Caster currently runs account-free: there is no
+login, setup wizard, password, session, profile, or API-token requirement.
+Every client uses the shared public household identity, so catalog, playback,
+progress, scanning, and server controls are available immediately. Keep the
+server on a trusted private network while authentication is being designed.
 
-With no account credential, only a client connected directly from loopback can
-browse or play media. To deliberately run account-free on a private network,
-set both `CASTER_OPEN_MODE=true` and an exact IP/CIDR allowlist such as
-`CASTER_OPEN_NETWORKS=192.168.0.0/16,100.64.0.0/10`. This exposes the catalog
-and playback content to every allowed client; administrative routes remain
-locked. Caster prints a prominent startup warning while this mode is active.
+Cross-origin web clients must list their exact origin in
+`CASTER_TRUSTED_ORIGINS`. This is an origin policy for browser requests, not a
+user authentication system.
 
 Reverse-proxy forwarding headers are ignored unless the immediate proxy is in
 `CASTER_TRUSTED_PROXIES` (exact IP or IPv4/IPv6 CIDR). For example, use
@@ -87,7 +81,6 @@ cd docker
 docker compose up -d
 ```
 
-Open `http://SERVER_IP:3001` from the host's LAN and claim the server. Accounts
-created afterward use owner-issued, expiring, one-use invite links. The data
-volume must remain persistent because it contains the database, credential
-hashes, invite records, and watch history.
+Open `http://SERVER_IP:3001` from the host's LAN. No account claim or credential
+setup is required. The data volume must remain persistent because it contains
+the database and watch history.

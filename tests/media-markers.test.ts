@@ -71,7 +71,6 @@ describe('persistent playback markers', () => {
     app = new Hono();
     app.route('/api/media', createPlaybackRouter<FixtureMedia>({
       markerStore: markers,
-      isAdmin: (context) => context.req.header('x-role') === 'admin',
       resolveMedia: (context, mediaId) => {
         if (context.req.header('x-deny') === 'true') return null;
         return mediaById.get(mediaId) ?? null;
@@ -169,15 +168,15 @@ describe('persistent playback markers', () => {
     expect(await denied.json()).toEqual({ error: 'Media not found' });
   });
 
-  it('requires an admin and validates manual marker replacements', async () => {
+  it('validates manual marker replacements without an account gate', async () => {
     const viewer = await app.request('/api/media/episode-1/markers/intro', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-role': 'viewer' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: true, startSeconds: 5, endSeconds: 60 })
     });
-    expect(viewer.status).toBe(403);
+    expect(viewer.status).toBe(200);
 
-    const adminHeaders = { 'Content-Type': 'application/json', 'x-role': 'admin' };
+    const adminHeaders = { 'Content-Type': 'application/json' };
     for (const [path, body] of [
       ['/api/media/episode-1/markers/recap', { enabled: false }],
       ['/api/media/episode-1/markers/intro', { enabled: true, startSeconds: 80, endSeconds: 40 }],
@@ -210,11 +209,9 @@ describe('persistent playback markers', () => {
     expect(await disabled.json()).toMatchObject({ marker: { state: 'disabled', source: 'manual' } });
   });
 
-  it('exposes admin marker editing and bounded analysis status endpoints', async () => {
-    const viewer = await app.request('/api/media/episode-1/markers');
-    expect(viewer.status).toBe(403);
+  it('exposes marker editing and bounded analysis status endpoints', async () => {
 
-    const adminHeaders = { 'x-role': 'admin' };
+    const adminHeaders = {};
     const queued = await app.request('/api/media/episode-1/markers/analysis', {
       method: 'POST', headers: adminHeaders
     });

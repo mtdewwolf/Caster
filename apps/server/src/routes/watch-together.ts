@@ -19,8 +19,8 @@ export interface AuthorizedWatchRoomMedia {
 }
 
 export interface WatchTogetherRouterDependencies {
-  /** Returns null when the request has no authenticated account principal. */
-  getAuthenticatedUserId: (context: Context) => string | null;
+  /** Returns the shared anonymous identity used by this account-free server. */
+  getUserId: (context: Context) => string;
   /**
    * Resolves media only when it is visible and streamable by the current
    * principal. Returning null deliberately makes denied media look missing.
@@ -64,14 +64,11 @@ async function readObject(context: Context): Promise<Record<string, unknown> | n
   }
 }
 
-function authenticatedUserId(
+function currentUserId(
   context: Context,
   dependencies: WatchTogetherRouterDependencies
-): string | Response {
-  const userId = dependencies.getAuthenticatedUserId(context);
-  return typeof userId === 'string' && userId.trim()
-    ? userId
-    : context.json({ error: 'Authentication required' }, 401);
+): string {
+  return dependencies.getUserId(context);
 }
 
 async function mediaForMember(
@@ -87,9 +84,7 @@ async function mediaForMember(
 }
 
 /**
- * Creates a mount-point-agnostic REST router. The caller owns authentication
- * and ACL policy through the injected dependencies; this adapter never falls
- * back to open-mode or a synthetic user identity.
+ * Creates a mount-point-agnostic REST router for the shared anonymous identity.
  */
 export function createWatchTogetherRouter(
   dependencies: WatchTogetherRouterDependencies
@@ -102,8 +97,7 @@ export function createWatchTogetherRouter(
   realtimeHub.start();
 
   router.post('/', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const body = await readObject(context);
     if (!body || typeof body.mediaId !== 'string') {
       return context.json({ error: 'mediaId is required' }, 400);
@@ -131,8 +125,7 @@ export function createWatchTogetherRouter(
   });
 
   router.post('/:id/join', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const body = await readObject(context);
     if (!body || typeof body.inviteToken !== 'string') {
       return context.json({ error: 'inviteToken is required' }, 400);
@@ -156,8 +149,7 @@ export function createWatchTogetherRouter(
   });
 
   router.get('/:id', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     try {
       const result = await mediaForMember(
         context, dependencies, service, context.req.param('id'), userId
@@ -170,8 +162,7 @@ export function createWatchTogetherRouter(
   });
 
   router.get('/:id/ws', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const roomId = context.req.param('id');
     try {
       const authorized = await mediaForMember(context, dependencies, service, roomId, userId);
@@ -215,8 +206,7 @@ export function createWatchTogetherRouter(
   });
 
   router.post('/:id/leave', (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     try {
       service.leaveRoom(context.req.param('id'), userId);
       realtimeHub.evictMember(context.req.param('id'), userId);
@@ -227,8 +217,7 @@ export function createWatchTogetherRouter(
   });
 
   router.delete('/:id', (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     try {
       service.closeRoom(context.req.param('id'), userId);
       realtimeHub.closeConnections(context.req.param('id'));
@@ -239,8 +228,7 @@ export function createWatchTogetherRouter(
   });
 
   router.post('/:id/commands', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const body = await readObject(context);
     if (!body || (body.action !== 'play' && body.action !== 'pause' && body.action !== 'seek')) {
       return context.json({ error: 'A valid command action is required' }, 400);
@@ -261,8 +249,7 @@ export function createWatchTogetherRouter(
   });
 
   router.post('/:id/host-report', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const body = await readObject(context);
     if (!body) return context.json({ error: 'A valid host report is required' }, 400);
     try {
@@ -282,8 +269,7 @@ export function createWatchTogetherRouter(
   });
 
   router.patch('/:id/preferences', async (context) => {
-    const userId = authenticatedUserId(context, dependencies);
-    if (userId instanceof Response) return userId;
+    const userId = currentUserId(context, dependencies);
     const body = await readObject(context);
     if (!body) return context.json({ error: 'Valid preferences are required' }, 400);
     try {

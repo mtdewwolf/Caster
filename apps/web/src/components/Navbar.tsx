@@ -1,6 +1,5 @@
 import React from 'react';
-import { Film, Home, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut, UsersRound } from 'lucide-react';
-import type { AuthUser } from '../api';
+import { Film, Home, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History } from 'lucide-react';
 import type { SystemHardwareStatus } from '../types';
 
 export type AppView = 'home' | 'library' | 'progress';
@@ -15,11 +14,6 @@ interface NavbarProps {
   onOpenSettings: () => void;
   hardware: SystemHardwareStatus | null;
   isScanning: boolean;
-  user?: AuthUser;
-  isAdmin: boolean;
-  onLogin: () => void;
-  onSwitchProfile: () => void;
-  onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -31,12 +25,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSearchChange,
   onOpenSettings,
   hardware,
-  isScanning,
-  user,
-  isAdmin,
-  onLogin,
-  onSwitchProfile,
-  onLogout
+  isScanning
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 sm:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
@@ -191,39 +180,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         )}
 
-        {user ? (
-          <div className="flex items-center">
-            <button
-              type="button"
-              onClick={onSwitchProfile}
-              className="flex items-center gap-1.5 rounded-l-lg border border-blue-500/30 bg-blue-950/40 px-2.5 py-1.5 text-[11px] font-medium text-blue-300 transition-colors hover:bg-blue-900/50"
-              title="Switch profile"
-            >
-              <UsersRound className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{user.username}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="rounded-r-lg border border-l-0 border-blue-500/30 bg-blue-950/40 p-1.5 text-blue-300 transition-colors hover:bg-blue-900/50"
-              title={`Sign out ${user.username}`}
-              aria-label={`Sign out ${user.username}`}
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={onLogin}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg text-slate-300 hover:text-white text-[11px] font-medium transition-colors"
-            title="Sign in to Caster"
-          >
-            <LockKeyhole className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Sign in</span>
-          </button>
-        )}
-
         {/* Progress button (mobile only — desktop uses nav pill) */}
         <button
           onClick={() => onViewChange(activeView === 'progress' ? 'library' : 'progress')}
@@ -238,18 +194,16 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Settings button */}
-        {!user || isAdmin ? (
-          <button
-            onClick={onOpenSettings}
-            className="p-2 bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-300 hover:text-white rounded-xl transition-colors relative"
-            title="Server Settings"
-          >
-            <Settings className="w-4 h-4" />
-            {isScanning ? (
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping" />
-            ) : null}
-          </button>
-        ) : null}
+        <button
+          onClick={onOpenSettings}
+          className="p-2 bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-300 hover:text-white rounded-xl transition-colors relative"
+          title="Server Settings"
+        >
+          <Settings className="w-4 h-4" />
+          {isScanning ? (
+            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping" />
+          ) : null}
+        </button>
       </div>
     </header>
   );

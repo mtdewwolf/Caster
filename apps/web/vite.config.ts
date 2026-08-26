@@ -8,14 +8,17 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        // Keep the API target distinct from Vite's fallback ports. Using
+        // `localhost` can resolve to another Vite instance on ::1 when a
+        // duplicate dev process has already claimed the expected port.
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         configure: (proxy) => {
           // The browser is same-origin with Vite on :3000, but Caster receives
-          // the proxied request on :3001. Normalize only the development
-          // proxy's Origin header so backend CSRF checks see their own origin.
+          // the proxied request on :3001. Normalize the development proxy's
+          // Origin header for the backend's origin policy.
           proxy.on('proxyReq', (proxyRequest) => {
-            proxyRequest.setHeader('Origin', 'http://localhost:3001');
+            proxyRequest.setHeader('Origin', 'http://127.0.0.1:3001');
           });
         },
         ws: true

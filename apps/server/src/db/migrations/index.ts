@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import { ADMIN_USER_ID } from '../../identity';
+import { ADMIN_USER_ID, PUBLIC_USER_ID } from '../../identity';
 import { titleIdentityFor } from '../logical-media';
 
 export interface DatabaseMigration {
@@ -994,6 +994,19 @@ export function runDatabaseMigrations(
       `, [migration.version, migration.name, new Date().toISOString()]);
     });
     appliedByVersion.set(migration.version, migration.name);
+  }
+
+  // The active application has one shared identity. Keep it present on every
+  // database, including databases initialized directly by tests or tools.
+  const hasUsersTable = database.query(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'
+  `).get();
+  if (hasUsersTable) {
+    const now = new Date().toISOString();
+    database.run(`
+      INSERT OR IGNORE INTO users (id, username, role, active, created_at, updated_at)
+      VALUES (?, 'public', 'admin', 1, ?, ?)
+    `, [PUBLIC_USER_ID, now, now]);
   }
 }
 

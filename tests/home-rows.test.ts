@@ -1,7 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { db, initDatabase, LibraryModel, MediaModel, ProgressModel } from '../apps/server/src/db';
-import { SqliteUserStore } from '../apps/server/src/db/user-store';
-import { AccountProvisioningStore } from '../apps/server/src/db/account-provisioning';
 import server from '../apps/server/src/index';
 
 describe('home rows', () => {
@@ -119,19 +117,11 @@ describe('home rows', () => {
 
 describe('home rows route', () => {
   const suffix = crypto.randomUUID();
-  const adminId = `home-route-admin-${suffix}`;
-  const adminToken = `home-route-token-${suffix}`;
 
-  const call = (pathname: string) => server.fetch(new Request(`http://localhost${pathname}`, {
-    headers: { Authorization: `Bearer ${adminToken}` }
-  }));
+  const call = (pathname: string) => server.fetch(new Request(`http://localhost${pathname}`));
 
   beforeAll(() => {
     initDatabase();
-    const users = new SqliteUserStore(db);
-    users.create(adminId, `home-route-admin-${suffix}`, 'admin');
-    users.setCredential(adminId, 'api_token', adminToken);
-    new AccountProvisioningStore(db).claimLegacyOwnerIfConfigured(adminId);
   });
 
   it('serves every row from one request', async () => {

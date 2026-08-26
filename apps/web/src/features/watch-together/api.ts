@@ -3,7 +3,6 @@ import type { WatchRoomSnapshot } from './contracts';
 async function watchRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/watch-rooms${path}`, {
     ...init,
-    credentials: 'same-origin',
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers

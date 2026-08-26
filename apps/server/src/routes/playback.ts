@@ -24,14 +24,11 @@ export interface PlaybackMedia {
 export interface PlaybackRouterDependencies<TMedia extends PlaybackMedia = PlaybackMedia> {
   markerStore: MediaMarkerStore;
 
-  /** Must return null unless the current principal may discover this item. */
+  /** Returns null when the requested media item does not exist. */
   resolveMedia: (context: Context, mediaId: string) => MaybePromise<TMedia | null>;
 
   /** Must apply the same library/rating scope and return a viewer-safe value. */
   resolveNextEpisode?: (context: Context, media: TMedia) => MaybePromise<unknown | null>;
-
-  /** Defense in depth; central request security should also guard this PUT. */
-  isAdmin: (context: Context) => MaybePromise<boolean>;
 
   /** Optional injection point for tests or deployments with custom detectors. */
   analysisScheduler?: MarkerAnalysisScheduler<MarkerAnalysisInput, MarkerAnalysisResult>;
@@ -78,10 +75,6 @@ export function createPlaybackRouter<TMedia extends PlaybackMedia>(
   });
 
   router.put('/:id/markers/:type', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
-
     const markerType = context.req.param('type');
     if (!isMediaMarkerType(markerType)) {
       return context.json({ error: 'Marker type must be intro or credits' }, 400);
@@ -130,9 +123,6 @@ export function createPlaybackRouter<TMedia extends PlaybackMedia>(
   });
 
   router.get('/:id/markers', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     const media = await dependencies.resolveMedia(context, context.req.param('id'));
     if (!media) return context.json({ error: 'Media not found' }, 404);
     if (media.type !== 'episode') {
@@ -145,9 +135,6 @@ export function createPlaybackRouter<TMedia extends PlaybackMedia>(
   });
 
   router.post('/:id/markers/analysis', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     const media = await dependencies.resolveMedia(context, context.req.param('id'));
     if (!media) return context.json({ error: 'Media not found' }, 404);
     if (media.type !== 'episode') {
@@ -173,9 +160,6 @@ export function createPlaybackRouter<TMedia extends PlaybackMedia>(
   });
 
   router.get('/:id/markers/analysis', async (context) => {
-    if (!await dependencies.isAdmin(context)) {
-      return context.json({ error: 'Administrator access required' }, 403);
-    }
     const media = await dependencies.resolveMedia(context, context.req.param('id'));
     if (!media) return context.json({ error: 'Media not found' }, 404);
     return context.json({

@@ -42,7 +42,6 @@ async function playlistRequest<T>(path: string, init: RequestInit = {}): Promise
   try {
     response = await fetch(`${PLAYLIST_API_BASE}${path}`, {
       ...init,
-      credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),

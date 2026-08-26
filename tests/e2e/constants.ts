@@ -2,8 +2,6 @@ import path from 'node:path';
 
 export const E2E_PORT = 43_142;
 export const E2E_BASE_URL = `http://127.0.0.1:${E2E_PORT}`;
-export const E2E_ADMIN_PASSWORD = 'caster-e2e-admin-password';
-
 export const SEEDED_LIBRARY_ID = 'lib_e2e_seeded';
 export const SEEDED_LIBRARY_NAME = 'E2E Seeded Media';
 export const MOONRISE_MEDIA_ID = 'media_e2e_moonrise';

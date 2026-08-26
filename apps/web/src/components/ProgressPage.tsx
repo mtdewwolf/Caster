@@ -22,8 +22,6 @@ interface ProgressPageProps {
   onPlay: (item: MediaItem) => void;
   onSelect: (item: MediaItem) => void;
   refreshToken: number;
-  isAuthenticated: boolean;
-  onRequireAuthentication: () => void;
 }
 
 const formatDuration = (secs: number) => {
@@ -53,9 +51,7 @@ const formatRelative = (iso: string) => {
 export const ProgressPage: React.FC<ProgressPageProps> = ({
   onPlay,
   onSelect,
-  refreshToken,
-  isAuthenticated,
-  onRequireAuthentication
+  refreshToken
 }) => {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [filter, setFilter] = useState<StatusFilter>('all');
@@ -98,28 +94,16 @@ export const ProgressPage: React.FC<ProgressPageProps> = ({
   );
 
   const handleMarkWatched = async (id: string) => {
-    if (!isAuthenticated) {
-      onRequireAuthentication();
-      return;
-    }
     await api.markWatched(id);
     await loadProgress();
   };
 
   const handleMarkUnwatched = async (id: string) => {
-    if (!isAuthenticated) {
-      onRequireAuthentication();
-      return;
-    }
     await api.markUnwatched(id);
     await loadProgress();
   };
 
   const handleRemove = async (id: string) => {
-    if (!isAuthenticated) {
-      onRequireAuthentication();
-      return;
-    }
     await api.removeProgress(id);
     await loadProgress();
   };
