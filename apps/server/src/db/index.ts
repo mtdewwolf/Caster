@@ -180,9 +180,20 @@ export const MediaModel = {
              p.user_id as progress_user_id
       FROM media_items m
       JOIN libraries l ON m.library_id = l.id
-      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
+      -- Progress belongs to the logical title, so opening the 1080p copy of a
+      -- film resumes where the 4K copy left off. The subquery keeps this to the
+      -- single-item lookup; list queries stay on the cheap per-file join.
+      LEFT JOIN watch_progress p ON p.user_id = ? AND p.id = (
+        SELECT wp.id FROM watch_progress wp
+        WHERE wp.user_id = ?
+          AND (wp.media_id = m.id OR (m.title_id IS NOT NULL AND wp.title_id = m.title_id))
+        -- Two versions watched in the same millisecond tie on timestamp, so
+        -- the furthest position wins: never resume someone backwards.
+        ORDER BY wp.last_watched_at DESC, wp.position_seconds DESC
+        LIMIT 1
+      )
       WHERE m.id = ? AND ${scopeClause} AND ${ratingClause}
-    `).get(userId, id, ...scopeParams) as any;
+    `).get(userId, userId, id, ...scopeParams) as any;
 
     if (!row) return null;
     return formatMediaRow(row);
@@ -193,6 +204,9 @@ export const MediaModel = {
     type?: string;
     search?: string;
     resolution?: string;
+    genre?: string;
+    watched?: WatchedFilter;
+    hdr?: boolean;
     limit?: number;
     offset?: number;
     sort?: string;
@@ -216,6 +230,24 @@ export const MediaModel = {
       whereClauses.push('m.resolution_label LIKE ?');
       params.push(`%${options.resolution}%`);
     }
+    if (options.genre) {
+      // Genre is a comma-joined list on the row, so match a delimited segment
+      // rather than a bare substring ("Drama" must not match "Dramedy").
+      whereClauses.push(`(', ' || REPLACE(m.genre, ',', ', ') || ', ') LIKE ?`);
+      params.push(`%, ${options.genre}, %`);
+    }
+    if (options.hdr !== undefined) {
+      whereClauses.push(options.hdr ? 'm.is_hdr = 1' : 'COALESCE(m.is_hdr, 0) = 0');
+    }
+    // Watched state lives in a per-user table. A correlated EXISTS keeps the
+    // clause valid in the COUNT query, which does not join watch_progress.
+    if (options.watched && options.watched !== 'all') {
+      const progressClause = WATCHED_FILTER_CLAUSES[options.watched];
+      if (progressClause) {
+        whereClauses.push(progressClause);
+        params.push(userId);
+      }
+    }
     const search = options.search?.trim();
     if (search) {
       const ftsQuery = buildFtsQuery(search);
@@ -232,10 +264,9 @@ export const MediaModel = {
 
     const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    let orderStr = 'ORDER BY m.created_at DESC';
-    if (options.sort === 'title') orderStr = 'ORDER BY m.title ASC';
-    else if (options.sort === 'year') orderStr = 'ORDER BY m.year DESC, m.title ASC';
-    else if (options.sort === 'duration') orderStr = 'ORDER BY m.duration DESC';
+    // Every ordering ends in a unique column so pagination cannot drop or
+    // repeat a row when several share a sort value.
+    const orderStr = `ORDER BY ${MEDIA_SORT_CLAUSES[options.sort ?? ''] ?? MEDIA_SORT_CLAUSES.added}`;
 
     const countRow = db.query(`SELECT COUNT(*) as count FROM media_items m ${whereStr}`).get(...params) as { count: number };
     const total = countRow?.count || 0;
@@ -260,6 +291,43 @@ export const MediaModel = {
       items: rows.map(formatMediaRow),
       total
     };
+  },
+
+  /** Distinct genre names in scope, for populating the library filter menu. */
+  getGenres: (options: {
+    libraryId?: string;
+    type?: string;
+    allowedLibraryIds?: readonly string[];
+    contentRatingScope?: ContentRatingScope;
+  } = {}): string[] => {
+    const whereClauses: string[] = ["m.genre IS NOT NULL", "TRIM(m.genre) != ''"];
+    const params: any[] = [];
+
+    if (options.libraryId) {
+      whereClauses.push('m.library_id = ?');
+      params.push(options.libraryId);
+    }
+    whereClauses.push(libraryScopeClause('m', options.allowedLibraryIds, params));
+    whereClauses.push(contentRatingScopeClause('m', options.contentRatingScope, params));
+    if (options.type) {
+      whereClauses.push('m.type = ?');
+      params.push(options.type);
+    }
+
+    const rows = db.query(`
+      SELECT DISTINCT m.genre AS genre FROM media_items m
+      WHERE ${whereClauses.join(' AND ')}
+    `).all(...params) as Array<{ genre: string }>;
+
+    // Rows store genres as a comma-joined list, so split before de-duplicating.
+    const genres = new Set<string>();
+    for (const row of rows) {
+      for (const genre of row.genre.split(',')) {
+        const name = genre.trim();
+        if (name) genres.add(name);
+      }
+    }
+    return [...genres].sort((left, right) => left.localeCompare(right, 'en'));
   },
 
   getProgressItems: (userId: string, options: {
@@ -322,6 +390,125 @@ export const MediaModel = {
       ORDER BY p.last_watched_at DESC
       LIMIT ?
     `).all(userId, ...scopeParams, limit) as any[];
+
+    return rows.map(formatMediaRow);
+  },
+
+  /** Newest indexed items, for the Recently Added home row. */
+  getRecentlyAdded: (
+    userId: string,
+    limit: number = 12,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem[] => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
+    const rows = db.query(`
+      SELECT m.*, l.name as library_name,
+             p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
+      FROM media_items m
+      JOIN libraries l ON m.library_id = l.id
+      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
+      WHERE ${scopeClause} AND ${ratingClause}
+      ORDER BY m.created_at DESC, m.id ASC
+      LIMIT ?
+    `).all(userId, ...scopeParams, limit) as any[];
+
+    return rows.map(formatMediaRow);
+  },
+
+  /** Most recently finished items, for the Recently Watched home row. */
+  getRecentlyWatched: (
+    userId: string,
+    limit: number = 12,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem[] => {
+    const scopeParams: string[] = [];
+    const scopeClause = libraryScopeClause('m', allowedLibraryIds, scopeParams);
+    const ratingClause = contentRatingScopeClause('m', contentRatingScope, scopeParams);
+    const rows = db.query(`
+      SELECT m.*, l.name as library_name,
+             p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id
+      FROM watch_progress p
+      JOIN media_items m ON p.media_id = m.id
+      JOIN libraries l ON m.library_id = l.id
+      WHERE p.user_id = ? AND p.completed = 1
+        AND ${scopeClause} AND ${ratingClause}
+      ORDER BY p.last_watched_at DESC
+      LIMIT ?
+    `).all(userId, ...scopeParams, limit) as any[];
+
+    return rows.map(formatMediaRow);
+  },
+
+  /**
+   * The next unwatched episode of each series the viewer has finished an
+   * episode of. One row per series, ordered by how recently they watched it.
+   *
+   * Season and episode numbers are combined into a single ordering key so that
+   * "after S01E10" correctly means S02E01 rather than S01E11 only.
+   */
+  getNextUp: (
+    userId: string,
+    limit: number = 12,
+    allowedLibraryIds?: readonly string[],
+    contentRatingScope?: ContentRatingScope
+  ): MediaItem[] => {
+    const watchedScopeParams: string[] = [];
+    const watchedScope = libraryScopeClause('w', allowedLibraryIds, watchedScopeParams);
+    const watchedRating = contentRatingScopeClause('w', contentRatingScope, watchedScopeParams);
+
+    const nextScopeParams: string[] = [];
+    const nextScope = libraryScopeClause('m', allowedLibraryIds, nextScopeParams);
+    const nextRating = contentRatingScopeClause('m', contentRatingScope, nextScopeParams);
+
+    const rows = db.query(`
+      WITH watched_series AS (
+        SELECT w.library_id AS library_id,
+               w.series_title AS series_title,
+               MAX(w.season_number * 10000 + w.episode_number) AS last_key,
+               MAX(wp.last_watched_at) AS last_watched_at
+        FROM media_items w
+        JOIN watch_progress wp ON wp.media_id = w.id AND wp.user_id = ?
+        WHERE w.type = 'episode'
+          AND w.series_title IS NOT NULL
+          AND w.season_number IS NOT NULL
+          AND w.episode_number IS NOT NULL
+          AND wp.completed = 1
+          AND ${watchedScope} AND ${watchedRating}
+        GROUP BY w.library_id, w.series_title
+      )
+      SELECT m.*, l.name as library_name,
+             p.id as progress_id, p.position_seconds, p.duration_seconds as p_duration,
+             p.progress_percent, p.completed, p.last_watched_at,
+             p.user_id as progress_user_id,
+             MIN(m.season_number * 10000 + m.episode_number) AS next_key,
+             s.last_watched_at AS series_last_watched_at
+      FROM media_items m
+      JOIN watched_series s
+        ON s.library_id = m.library_id AND s.series_title = m.series_title
+      JOIN libraries l ON m.library_id = l.id
+      LEFT JOIN watch_progress p ON m.id = p.media_id AND p.user_id = ?
+      WHERE m.type = 'episode'
+        AND m.season_number IS NOT NULL
+        AND m.episode_number IS NOT NULL
+        AND (m.season_number * 10000 + m.episode_number) > s.last_key
+        AND COALESCE(p.completed, 0) = 0
+        AND ${nextScope} AND ${nextRating}
+      GROUP BY m.library_id, m.series_title
+      ORDER BY s.last_watched_at DESC
+      LIMIT ?
+    `).all(
+      userId, ...watchedScopeParams,
+      userId, ...nextScopeParams,
+      limit
+    ) as any[];
 
     return rows.map(formatMediaRow);
   },
@@ -656,6 +843,45 @@ function contentRatingScopeClause(
     : `(${tableAlias}.content_rating_level IS NOT NULL AND ${tableAlias}.content_rating_level <= ?)`;
 }
 
+export type WatchedFilter = 'all' | 'unwatched' | 'in_progress' | 'watched';
+
+export const WATCHED_FILTERS: readonly WatchedFilter[] =
+  ['all', 'unwatched', 'in_progress', 'watched'];
+
+const WATCHED_FILTER_CLAUSES: Record<Exclude<WatchedFilter, 'all'>, string> = {
+  unwatched: `NOT EXISTS (
+    SELECT 1 FROM watch_progress wp
+    WHERE wp.media_id = m.id AND wp.user_id = ? AND wp.position_seconds > 0
+  )`,
+  in_progress: `EXISTS (
+    SELECT 1 FROM watch_progress wp
+    WHERE wp.media_id = m.id AND wp.user_id = ?
+      AND wp.completed = 0 AND wp.position_seconds > 0
+  )`,
+  watched: `EXISTS (
+    SELECT 1 FROM watch_progress wp
+    WHERE wp.media_id = m.id AND wp.user_id = ? AND wp.completed = 1
+  )`
+};
+
+const MEDIA_SORT_CLAUSES: Record<string, string> = {
+  added: 'm.created_at DESC, m.id ASC',
+  oldest: 'm.created_at ASC, m.id ASC',
+  title: 'm.title COLLATE NOCASE ASC, m.id ASC',
+  title_desc: 'm.title COLLATE NOCASE DESC, m.id ASC',
+  year: 'm.year IS NULL, m.year DESC, m.title COLLATE NOCASE ASC, m.id ASC',
+  year_asc: 'm.year IS NULL, m.year ASC, m.title COLLATE NOCASE ASC, m.id ASC',
+  duration: 'm.duration DESC, m.id ASC',
+  duration_asc: 'm.duration ASC, m.id ASC',
+  size: 'm.size_bytes DESC, m.id ASC'
+};
+
+export const MEDIA_SORT_OPTIONS: readonly string[] = Object.keys(MEDIA_SORT_CLAUSES);
+
+export function isWatchedFilter(value: unknown): value is WatchedFilter {
+  return typeof value === 'string' && (WATCHED_FILTERS as readonly string[]).includes(value);
+}
+
 function buildFtsQuery(search: string): string {
   const tokens = search.match(/[\p{L}\p{N}_]+/gu) || [];
   return tokens.map((token) => `"${token.replaceAll('"', '""')}"*`).join(' AND ');
@@ -690,6 +916,14 @@ export const ProgressModel = {
       $completed: completed,
       $now: now
     });
+
+    // Stamp the logical title so this position is findable from any other
+    // version of the same work.
+    db.run(`
+      UPDATE watch_progress
+      SET title_id = (SELECT m.title_id FROM media_items m WHERE m.id = ?)
+      WHERE user_id = ? AND media_id = ?
+    `, [mediaId, userId, mediaId]);
 
     return {
       id,

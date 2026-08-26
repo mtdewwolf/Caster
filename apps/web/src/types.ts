@@ -18,6 +18,8 @@ export interface MediaStreamTrack {
   title?: string;
   is_default?: boolean;
   is_forced?: boolean;
+  /** True for a sidecar file discovered next to the media, not an embedded track. */
+  is_external?: boolean;
   color_space?: string;
   color_transfer?: string;
   color_primaries?: string;
@@ -149,6 +151,10 @@ export interface SystemHardwareStatus {
   nvencSupported: boolean;
   vaapiSupported: boolean;
   activeTranscodes: number;
+  /** Output codecs this FFmpeg build can produce at all. */
+  outputCodecs?: { h264: boolean; hevc: boolean; av1: boolean };
+  /** The subset of those a GPU can produce, which is what decides their use. */
+  hardwareCodecs?: { h264: boolean; hevc: boolean; av1: boolean };
 }
 
 export interface ScanStatus {
@@ -171,4 +177,85 @@ export interface BrowseResult {
   current: string;
   parent: string | null;
   entries: FilesystemEntry[];
+}
+
+export interface MetadataCredit {
+  name: string;
+  role?: string;
+  character?: string;
+  order?: number;
+  profileUrl?: string;
+}
+
+export interface MetadataArtwork {
+  providerId: string;
+  kind: string;
+  url: string;
+  width: number | null;
+  height: number | null;
+  language: string | null;
+}
+
+/** Descriptive metadata from a provider, kept separate from scanner-derived fields. */
+export interface MediaMetadata {
+  subject: { type: 'media' | 'series'; id: string };
+  providerId: string | null;
+  externalId: string | null;
+  title: string | null;
+  originalTitle: string | null;
+  overview: string | null;
+  tagline: string | null;
+  releaseDate: string | null;
+  genres: string[];
+  studios: string[];
+  networks: string[];
+  rating: number | null;
+  contentRating: string | null;
+  cast: MetadataCredit[];
+  crew: MetadataCredit[];
+  externalIds: Array<{ providerId: string; externalId: string }>;
+  matchConfidence: number | null;
+  matchSource: 'provider' | 'manual';
+  locked: boolean;
+  refreshedAt: string;
+  artwork: MetadataArtwork[];
+}
+
+/** The server's decision about how this file reaches this device. */
+export interface PlaybackDecision {
+  method: 'direct' | 'remux' | 'transcode';
+  videoAction: 'copy' | 'transcode';
+  audioAction: 'copy' | 'transcode';
+  toneMap: boolean;
+  reasons: string[];
+  /** One sentence a person can act on. */
+  summary: string;
+}
+
+/** One playable file under a logical title. */
+export interface MediaVersion {
+  mediaId: string;
+  label: string;
+  resolutionLabel: string | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  audioChannelLayout: string | null;
+  isHdr: boolean;
+  format: string;
+  durationSeconds: number;
+  sizeBytes: number;
+  isPreferred: boolean;
+}
+
+export interface MetadataCandidate {
+  providerId: string;
+  externalId: string;
+  entityType: string;
+  title: string;
+  originalTitle?: string;
+  overview?: string;
+  releaseDate?: string;
+  year?: number;
+  score?: number;
+  poster?: MetadataArtwork;
 }

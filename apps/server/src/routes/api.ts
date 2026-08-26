@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { db, ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
+import { isWatchedFilter, MEDIA_SORT_OPTIONS, WATCHED_FILTERS } from '../db';
 import { AccessControlStore, type AccessPrincipal } from '../db/access-control';
 import { createMusicLibraryStore } from '../db/music-library';
 import { MediaMarkerStore } from '../db/media-marker-store';
@@ -17,10 +18,18 @@ import { convertSrtToVtt } from '../scanner/subtitles';
 import { ensureMediaThumbnail, getThumbnailPath } from '../scanner/thumbnails';
 import {
   QUALITY_PROFILES,
+  SegmentUnavailableError,
   TranscodeCapacityError,
   TranscodeKilledError,
-  transcoder
+  transcoder,
+  type StreamRequestOptions
 } from '../transcoder/engine';
+import {
+  INIT_SEGMENT_NAME,
+  isNetworkClass,
+  segmentContentType,
+  type NetworkClass
+} from '../transcoder/quality';
 import type { HardwareAccelType, TranscodeQuality } from '../types';
 import { normalizeContentRating } from '../content-ratings';
 import {
@@ -31,6 +40,31 @@ import {
 } from '../auth';
 import { createMusicRouter } from './music';
 import { createPlaybackRouter } from './playback';
+import { createMetadataProvidersRouter, createMetadataRouter, publicMetadata } from './metadata';
+import { planMetadataMatch } from '../metadata/scanner-adapter';
+import { isAudioMode, type AudioMode, type AudioSourceInfo } from '../transcoder/audio';
+import { summarizeSubtitleTracks } from '../transcoder/subtitles';
+import {
+  parseClientCapabilities,
+  profileByName,
+  type ClientCapabilities
+} from '../transcoder/capabilities';
+import {
+  describePlaybackPlan,
+  planPlayback,
+  type PlaybackPlan
+} from '../transcoder/playback-plan';
+import { TitleStore } from '../db/title-store';
+import { readLibrarySchedules, updateLibrarySchedule } from '../db/scan-lock-store';
+import { autoScanRuntime } from '../scanner/runtime';
+
+const titleStore = new TitleStore(db);
+import {
+  artworkCache,
+  metadataEnrichment,
+  metadataRegistry,
+  metadataStore
+} from '../metadata/runtime';
 import { playlistRouter } from './playlists';
 import { createWatchTogetherRouter } from './watch-together';
 import { createCastAccessToken } from '../security/cast-access';
@@ -512,6 +546,58 @@ apiRouter.post('/libraries/scan-all', (c) => {
   return c.json({ status: 'started' });
 });
 
+// Per-library scanning policy. Both switches default to off, so nothing starts
+// watching an operator's filesystem without being asked.
+apiRouter.patch('/libraries/:id/scanning', async (c) => {
+  const libraryId = c.req.param('id');
+  if (!LibraryModel.getById(libraryId)) {
+    return c.json({ error: 'Library not found' }, 404);
+  }
+
+  const body = await readJsonObject(c);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+
+  const settings: {
+    autoScan?: boolean;
+    watchFilesystem?: boolean;
+    scanIntervalMinutes?: number | null;
+  } = {};
+
+  if (body.autoScan !== undefined) {
+    if (typeof body.autoScan !== 'boolean') {
+      return c.json({ error: 'autoScan must be true or false' }, 400);
+    }
+    settings.autoScan = body.autoScan;
+  }
+  if (body.watchFilesystem !== undefined) {
+    if (typeof body.watchFilesystem !== 'boolean') {
+      return c.json({ error: 'watchFilesystem must be true or false' }, 400);
+    }
+    settings.watchFilesystem = body.watchFilesystem;
+  }
+  if (body.scanIntervalMinutes !== undefined) {
+    const minutes = body.scanIntervalMinutes;
+    if (minutes !== null && (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 5)) {
+      return c.json({ error: 'scanIntervalMinutes must be null or an integer of at least 5' }, 400);
+    }
+    settings.scanIntervalMinutes = minutes;
+  }
+
+  if (!updateLibrarySchedule(db, libraryId, settings)) {
+    return c.json({ error: 'No scanning settings were provided' }, 400);
+  }
+
+  // Start or stop the watcher to match what was just asked for.
+  autoScanRuntime.syncWatchers();
+
+  const schedule = readLibrarySchedules(db).find((entry) => entry.libraryId === libraryId);
+  return c.json({ scanning: schedule ?? null });
+});
+
+apiRouter.get('/libraries/scanning', (c) => {
+  return c.json({ libraries: readLibrarySchedules(db) });
+});
+
 apiRouter.get('/libraries/scan/status', (c) => {
   return c.json(scanStatus);
 });
@@ -524,7 +610,18 @@ apiRouter.get('/media', (c) => {
   const type = query.type;
   const search = query.search;
   const resolution = query.resolution;
+  const genre = query.genre;
   const sort = query.sort;
+
+  if (sort && !MEDIA_SORT_OPTIONS.includes(sort)) {
+    return c.json({ error: `sort must be one of: ${MEDIA_SORT_OPTIONS.join(', ')}` }, 400);
+  }
+  if (query.watched !== undefined && !isWatchedFilter(query.watched)) {
+    return c.json({ error: `watched must be one of: ${WATCHED_FILTERS.join(', ')}` }, 400);
+  }
+  if (query.hdr !== undefined && query.hdr !== 'true' && query.hdr !== 'false') {
+    return c.json({ error: 'hdr must be true or false' }, 400);
+  }
   const limit = parseIntegerQuery(query.limit, 50, 1, MEDIA_PAGE_MAX_LIMIT);
   const offset = parseIntegerQuery(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
 
@@ -547,6 +644,9 @@ apiRouter.get('/media', (c) => {
     type,
     search,
     resolution,
+    genre,
+    ...(query.watched !== undefined ? { watched: query.watched } : {}),
+    ...(query.hdr !== undefined ? { hdr: query.hdr === 'true' } : {}),
     sort,
     limit,
     offset
@@ -555,6 +655,42 @@ apiRouter.get('/media', (c) => {
   return c.json({
     ...result,
     items: viewerSafeMediaList(c, result.items)
+  });
+});
+
+// One request per home render. Rows are already viewer-scoped, so an empty row
+// means "nothing to show you" rather than "you are not allowed to see this".
+apiRouter.get('/media/home', (c) => {
+  const userId = getCurrentUserId(c);
+  const libraryScope = libraryScopeFor(c);
+  const ratingScope = contentRatingScopeFor(c);
+  const rowLimit = parseIntegerQuery(c.req.query('limit'), 12, 1, 50);
+  if (rowLimit === null) {
+    return c.json({ error: 'limit must be between 1 and 50' }, 400);
+  }
+
+  const rows = {
+    continueWatching: MediaModel.getContinueWatching(userId, rowLimit, libraryScope, ratingScope),
+    nextUp: MediaModel.getNextUp(userId, rowLimit, libraryScope, ratingScope),
+    recentlyAdded: MediaModel.getRecentlyAdded(userId, rowLimit, libraryScope, ratingScope),
+    recentlyWatched: MediaModel.getRecentlyWatched(userId, rowLimit, libraryScope, ratingScope)
+  };
+
+  return c.json({
+    rows: Object.fromEntries(
+      Object.entries(rows).map(([key, items]) => [key, viewerSafeMediaList(c, items)])
+    )
+  });
+});
+
+apiRouter.get('/media/genres', (c) => {
+  return c.json({
+    genres: MediaModel.getGenres({
+      libraryId: c.req.query('libraryId'),
+      type: c.req.query('type'),
+      allowedLibraryIds: libraryScopeFor(c),
+      contentRatingScope: contentRatingScopeFor(c)
+    })
   });
 });
 
@@ -633,7 +769,27 @@ apiRouter.get('/media/:id', (c) => {
   if (!item) {
     return c.json({ error: 'Media not found' }, 404);
   }
-  return c.json({ item: viewerSafeMedia(resolvePrincipal(c), item) });
+  // Detail views want the descriptive layer alongside the technical one. It is
+  // attached rather than merged so the scanner-derived fields stay authoritative
+  // for playback and a missing provider simply yields metadata: null.
+  const plan = planMetadataMatch(item);
+  const metadata = plan ? metadataStore.get(plan.subject) : null;
+  return c.json({
+    item: viewerSafeMedia(resolvePrincipal(c), item),
+    metadata: metadata ? publicMetadata(metadata) : null,
+    // Image subtitles cannot be handed to the player as a text track, so the
+    // client needs to know which ones force a burned-in transcode.
+    subtitleTracks: subtitleTracksFor(item),
+    // What this client would get, and why — so the player can explain itself
+    // rather than showing a bare protocol badge.
+    playback: (() => {
+      const plan = playbackPlanFor(c, item, false);
+      return { ...plan, summary: describePlaybackPlan(plan) };
+    })(),
+    // Other files of the same work. A single-version title reports just itself,
+    // so clients can render a picker without special-casing the common case.
+    versions: titleStore.getVersionsForMedia(id)
+  });
 });
 
 apiRouter.patch('/media/:id/content-rating', async (c) => {
@@ -891,6 +1047,147 @@ apiRouter.get('/media/:id/cast', (c) => {
 
 // ---------------- HLS Dynamic Transcoding API ---------------- //
 
+/** Audio preference from the request, defaulting to the safe stereo path. */
+function audioModeFor(c: any): AudioMode {
+  const requested = c.req.query('audio');
+  return isAudioMode(requested) ? requested : 'stereo';
+}
+
+/**
+ * The audio decision has to survive into segment URLs, otherwise a client that
+ * asked for surround on the playlist silently gets stereo segments.
+ */
+function audioQuerySuffix(c: any, existingSuffix: string): string {
+  const parts: string[] = [];
+  const mode = c.req.query('audio');
+  if (isAudioMode(mode) && mode !== 'stereo') parts.push(`audio=${encodeURIComponent(mode)}`);
+  const track = c.req.query('audioTrack');
+  if (track && /^\d+$/.test(track)) parts.push(`audioTrack=${encodeURIComponent(track)}`);
+  const subtitle = c.req.query('subtitle');
+  if (subtitle && /^\d+$/.test(subtitle)) parts.push(`subtitle=${encodeURIComponent(subtitle)}`);
+  // The client's own description has to survive into segment URLs as well.
+  // Without it the playlist is planned for one device and the segments for a
+  // conservative stranger, and the two disagree about codec and bitrate.
+  const client = c.req.query('client');
+  if (client && /^[a-zA-Z0-9_-]{1,32}$/.test(client)) {
+    parts.push(`client=${encodeURIComponent(client)}`);
+  }
+  const capabilities = c.req.query('capabilities');
+  if (typeof capabilities === 'string' && capabilities.length > 0 && capabilities.length <= 2048) {
+    parts.push(`capabilities=${encodeURIComponent(capabilities)}`);
+  }
+  const network = c.req.query('network');
+  if (isNetworkClass(network)) parts.push(`network=${encodeURIComponent(network)}`);
+  if (parts.length === 0) return existingSuffix;
+  return existingSuffix
+    ? `${existingSuffix}&${parts.join('&')}`
+    : `?${parts.join('&')}`;
+}
+
+/**
+ * What the requesting client can play.
+ *
+ * A client may name a profile, send its own declaration, or say nothing — in
+ * which case it gets the conservative assumed set rather than a guess.
+ */
+function capabilitiesFor(c: any): ClientCapabilities {
+  const base = profileByName(c.req.query('client'));
+  const declared = c.req.query('capabilities');
+  if (!declared) return base;
+  try {
+    return parseClientCapabilities(JSON.parse(declared), base);
+  } catch {
+    return base;
+  }
+}
+
+/**
+ * Where the viewer is watching from.
+ *
+ * A device on the same network can be given far more bitrate than one on a
+ * hotel connection. The client says which it is; when it says nothing, the
+ * request's own network origin decides, and the local network is assumed.
+ */
+function networkFor(c: any): NetworkClass {
+  const declared = c.req.query('network');
+  if (isNetworkClass(declared)) return declared;
+  try {
+    return clientIsRemote(requestClientNetworkInput(c)) ? 'remote' : 'lan';
+  } catch {
+    return 'lan';
+  }
+}
+
+/** What the encoder needs to know about this client, connection and source. */
+function streamRequestFor(c: any, item: any): StreamRequestOptions {
+  return {
+    capabilities: capabilitiesFor(c),
+    network: networkFor(c),
+    source: {
+      height: typeof item?.height === 'number' ? item.height : undefined,
+      bitRate: typeof item?.bit_rate === 'number' ? item.bit_rate : undefined,
+      frameRate: typeof item?.frame_rate === 'number' ? item.frame_rate : undefined
+    }
+  };
+}
+
+/** The playback decision for this item and this client. */
+function playbackPlanFor(c: any, item: any, burnInSubtitle: boolean): PlaybackPlan {
+  return planPlayback({
+    capabilities: capabilitiesFor(c),
+    burnInSubtitle,
+    source: {
+      container: item.format,
+      videoCodec: item.video_codec,
+      height: item.height,
+      bitRate: item.bit_rate,
+      isHdr: Boolean(item.is_hdr),
+      audioCodec: item.audio_codec,
+      audioChannels: item.audio_channels
+    }
+  });
+}
+
+/** Subtitle tracks for an item, with the image ones flagged for burn-in. */
+function subtitleTracksFor(item: any) {
+  try {
+    return summarizeSubtitleTracks(JSON.parse(item.streams_json || '[]'));
+  } catch {
+    return [];
+  }
+}
+
+/** The selected subtitle track, when the client asked to burn one in. */
+function subtitleSelectionFor(c: any, item: any) {
+  const requested = c.req.query('subtitle');
+  const tracks = subtitleTracksFor(item);
+  if (!requested || !/^\d+$/.test(requested)) return { tracks };
+  return { tracks, streamIndex: Number(requested) };
+}
+
+/** Resolves which audio stream to plan against, honouring an explicit track. */
+function audioSourceFor(c: any, item: any): AudioSourceInfo {
+  const requestedTrack = c.req.query('audioTrack');
+  if (requestedTrack && /^\d+$/.test(requestedTrack)) {
+    const streamIndex = Number(requestedTrack);
+    try {
+      const streams = JSON.parse(item.streams_json || '[]') as Array<Record<string, any>>;
+      const match = streams.find((stream) =>
+        stream.codec_type === 'audio' && stream.index === streamIndex);
+      if (match) {
+        return {
+          codec: match.codec_name,
+          channels: match.channels,
+          streamIndex
+        };
+      }
+    } catch {
+      // A malformed streams blob falls back to the item's default track.
+    }
+  }
+  return { codec: item.audio_codec, channels: item.audio_channels };
+}
+
 apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
   const id = c.req.param('id');
   if (!mediaIsAccessible(c, id, 'stream')) return c.text('Not found', 404);
@@ -901,7 +1198,8 @@ apiRouter.get('/media/:id/hls/master.m3u8', (c) => {
     id,
     item.width || 1920,
     item.height || 1080,
-    castQuerySuffix(c)
+    audioQuerySuffix(c, castQuerySuffix(c)),
+    streamRequestFor(c, item)
   );
   return new Response(playlist, {
     headers: {
@@ -923,11 +1221,19 @@ apiRouter.get('/media/:id/hls/:quality/index.m3u8', (c) => {
   const item = MediaModel.getById(id, getCurrentUserId(c), libraryScopeFor(c));
   if (!item) return c.text('Not found', 404);
 
+  const selection = subtitleSelectionFor(c, item);
+  const { packaging } = transcoder.describeStreamPackaging(
+    quality,
+    playbackPlanFor(c, item, selection.streamIndex !== undefined),
+    streamRequestFor(c, item),
+    selection.streamIndex !== undefined
+  );
   const playlist = transcoder.generateVariantPlaylist(
     id,
     item.duration || 3600,
     quality,
-    castQuerySuffix(c)
+    audioQuerySuffix(c, castQuerySuffix(c)),
+    packaging
   );
   return new Response(playlist, {
     headers: {
@@ -945,14 +1251,17 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
   }
 
   const quality = requestedQuality;
-  const segmentFile = c.req.param('segment'); // e.g. "segment-0.ts"
+  // "segment-0.ts" for MPEG-TS, "segment-0.m4s" for fragmented MP4, or the
+  // one initialisation segment a fragmented stream begins with.
+  const segmentFile = c.req.param('segment');
+  const wantsInit = segmentFile === INIT_SEGMENT_NAME;
 
-  const seqMatch = segmentFile.match(/^segment-(\d+)\.ts$/);
-  if (!seqMatch) {
+  const seqMatch = segmentFile.match(/^segment-(\d+)\.(ts|m4s)$/);
+  if (!seqMatch && !wantsInit) {
     return c.text('Invalid segment name', 400);
   }
 
-  const seq = Number(seqMatch[1]);
+  const seq = wantsInit ? 0 : Number(seqMatch![1]);
   if (!Number.isSafeInteger(seq)) {
     return c.text('Invalid segment name', 400);
   }
@@ -965,10 +1274,30 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
   }
 
     try {
-      const chunkBuffer = await transcoder.getHlsSegment(item.full_path, id, quality, seq);
+      const selection = subtitleSelectionFor(c, item);
+      const audio = { source: audioSourceFor(c, item), mode: audioModeFor(c) };
+      const plan = playbackPlanFor(c, item, selection.streamIndex !== undefined);
+      const stream = streamRequestFor(c, item);
+      const { packaging } = transcoder.describeStreamPackaging(
+        quality, plan, stream, selection.streamIndex !== undefined
+      );
+
+      // A request for the wrong extension is a stale playlist, not a segment
+      // that happens to be missing — say so rather than encoding it twice.
+      if (!wantsInit && seqMatch![2] !== (packaging === 'fmp4' ? 'm4s' : 'ts')) {
+        return c.json({ error: 'This stream is packaged differently; reload the playlist' }, 404);
+      }
+
+      const chunkBuffer = wantsInit
+        ? await transcoder.getHlsInitSegment(
+            item.full_path, id, quality, audio, selection, plan, stream
+          )
+        : await transcoder.getHlsSegment(
+            item.full_path, id, quality, seq, audio, selection, plan, stream
+          );
       return new Response(new Uint8Array(chunkBuffer), {
       headers: {
-        'Content-Type': 'video/mp2t',
+        'Content-Type': wantsInit ? 'video/mp4' : segmentContentType(packaging),
         'Cache-Control': 'public, max-age=86400'
       }
     });
@@ -980,6 +1309,11 @@ apiRouter.get('/media/:id/hls/:quality/:segment', async (c) => {
     }
     if (err instanceof TranscodeKilledError) {
       return c.json({ error: err.message }, 503);
+    }
+    if (err instanceof SegmentUnavailableError) {
+      // Either the request is past the end of the stream or the encoder could
+      // not reach it in time; neither is a server fault.
+      return c.json({ error: err.message }, 404);
     }
     return c.text('Segment transcode failed', 500);
   }
@@ -1072,6 +1406,17 @@ apiRouter.get('/media/:id/subtitles/:index', async (c) => {
     }
   }
 
+  // An image subtitle has no text to hand back. Say so plainly instead of
+  // returning an empty cue list the player would silently render as nothing.
+  const track = subtitleTracksFor(item).find((candidate) => candidate.index === trackIndex);
+  if (track?.requiresBurnIn) {
+    return c.json({
+      error: 'This subtitle track is an image format and must be burned into the video',
+      codec: track.codecName,
+      burnInRequired: true
+    }, 409);
+  }
+
   try {
     const vtt = await transcoder.extractSubtitlesVtt(item.full_path, trackIndex);
     return new Response(vtt, {
@@ -1144,6 +1489,60 @@ apiRouter.route('/watch-rooms', createWatchTogetherRouter({
     );
   }
 }));
+
+const viewerScopedMedia = (c: any, id: string) => {
+  if (!mediaIsAccessible(c, id)) return null;
+  return MediaModel.getById(
+    id, getCurrentUserId(c), libraryScopeFor(c), contentRatingScopeFor(c)
+  );
+};
+
+apiRouter.route('/media', createMetadataRouter({
+  store: metadataStore,
+  enrichment: metadataEnrichment,
+  registry: metadataRegistry,
+  resolveMedia: viewerScopedMedia,
+  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
+}));
+
+apiRouter.route('/metadata', createMetadataProvidersRouter({
+  registry: metadataRegistry,
+  artworkCache,
+  isAdmin: (c) => resolvePrincipal(c)?.role === 'admin'
+}));
+
+const ARTWORK_MIME_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  svg: 'image/svg+xml'
+};
+
+/** Image content types. The general media helper only knows video containers. */
+function artworkMimeType(fileName: string): string {
+  const extension = path.extname(fileName).replace('.', '').toLowerCase();
+  return ARTWORK_MIME_TYPES[extension] ?? 'application/octet-stream';
+}
+
+// Cached provider artwork. The filename is a content hash written by the cache
+// itself, so it is validated rather than trusted and never joined from raw input.
+apiRouter.get('/artwork/:file', (c) => {
+  const requested = c.req.param('file');
+  if (!/^[0-9a-f]{40}\.[a-z0-9]{1,5}$/.test(requested)) {
+    return c.text('Not found', 404);
+  }
+
+  const filePath = artworkCache.filePath(requested);
+  if (!fs.existsSync(filePath)) {
+    return c.text('Not found', 404);
+  }
+
+  c.header('Content-Type', artworkMimeType(requested));
+  c.header('Cache-Control', 'public, max-age=604800, immutable');
+  return c.body(Bun.file(filePath).stream());
+});
 
 apiRouter.route('/media', createPlaybackRouter({
   markerStore,

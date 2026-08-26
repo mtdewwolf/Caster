@@ -1,3 +1,4 @@
+export * from './enrichment';
 export * from './provider';
 export * from './registry';
 export * from './scanner-adapter';

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { LockKeyhole, ShieldCheck, X } from 'lucide-react';
 
 interface LoginModalProps {
@@ -7,6 +8,9 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ onClose, onLogin }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
   const [username, setUsername] = useState('');
   const [credential, setCredential] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +33,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onClose, onLogin }) => {
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div
+      <div ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="login-title"

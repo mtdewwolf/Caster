@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { ADMIN_USER_ID } from '../../identity';
+import { titleIdentityFor } from '../logical-media';
 
 export interface DatabaseMigration {
   version: number;
@@ -497,6 +498,329 @@ function createScanDiscoverySchema(database: Database): void {
   `);
 }
 
+function createRemoteAccessSchema(database: Database): void {
+  database.run(`
+    CREATE TABLE remote_registration (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+      server_id TEXT NOT NULL UNIQUE,
+      control_plane_url TEXT,
+      enrolled_at TEXT,
+      disabled_at TEXT,
+      join_name TEXT UNIQUE,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  database.run(`
+    CREATE TABLE remote_heartbeat_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      seq INTEGER NOT NULL,
+      attempted_at TEXT NOT NULL,
+      ok INTEGER NOT NULL CHECK(ok IN (0, 1)),
+      status_code INTEGER,
+      error TEXT
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_remote_heartbeat_log_attempted_at
+      ON remote_heartbeat_log(attempted_at DESC)
+  `);
+}
+
+function createMetadataSchema(database: Database): void {
+  // Metadata hangs off either a single media row or a whole series. Series
+  // identity is still derived (library + title) rather than a real entity, so
+  // the subject is stored as a type/id pair instead of a foreign key. When the
+  // logical media schema lands, this becomes a straight FK.
+  database.run(`
+    CREATE TABLE media_metadata (
+      subject_type TEXT NOT NULL CHECK(subject_type IN ('media', 'series')),
+      subject_id TEXT NOT NULL,
+      provider_id TEXT,
+      external_id TEXT,
+      entity_type TEXT,
+      title TEXT,
+      original_title TEXT,
+      overview TEXT,
+      tagline TEXT,
+      release_date TEXT,
+      genres_json TEXT NOT NULL DEFAULT '[]',
+      studios_json TEXT NOT NULL DEFAULT '[]',
+      networks_json TEXT NOT NULL DEFAULT '[]',
+      rating REAL,
+      content_rating TEXT,
+      cast_json TEXT NOT NULL DEFAULT '[]',
+      crew_json TEXT NOT NULL DEFAULT '[]',
+      external_ids_json TEXT NOT NULL DEFAULT '[]',
+      match_confidence REAL,
+      match_source TEXT NOT NULL DEFAULT 'provider'
+        CHECK(match_source IN ('provider', 'manual')),
+      locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0, 1)),
+      refreshed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (subject_type, subject_id)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_media_metadata_provider
+      ON media_metadata(provider_id, external_id)
+  `);
+
+  database.run(`
+    CREATE TABLE metadata_artwork (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject_type TEXT NOT NULL CHECK(subject_type IN ('media', 'series')),
+      subject_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      url TEXT NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      language TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_metadata_artwork_subject
+      ON metadata_artwork(subject_type, subject_id, kind, sort_order)
+  `);
+
+  // One row per subject recording what was last asked of a provider. An
+  // unchanged rescan compares fingerprints and skips the request entirely.
+  database.run(`
+    CREATE TABLE metadata_fetch_log (
+      subject_type TEXT NOT NULL CHECK(subject_type IN ('media', 'series')),
+      subject_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      outcome TEXT NOT NULL
+        CHECK(outcome IN ('matched', 'ambiguous', 'not_found', 'error', 'skipped')),
+      attempted_at TEXT NOT NULL,
+      PRIMARY KEY (subject_type, subject_id)
+    )
+  `);
+}
+
+function createMediaPathHistorySchema(database: Database): void {
+  // Every path a media item has ever occupied. Fingerprints alone cannot break
+  // a tie between two identical files; knowing one of them used to live at this
+  // exact path can.
+  database.run(`
+    CREATE TABLE media_path_history (
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      full_path TEXT NOT NULL,
+      library_id TEXT,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (media_id, full_path)
+    )
+  `);
+  database.run(`
+    CREATE INDEX idx_media_path_history_path ON media_path_history(full_path)
+  `);
+
+  // Seed from what is already indexed so existing installs start with a
+  // truthful history rather than an empty one.
+  database.run(`
+    INSERT OR IGNORE INTO media_path_history (
+      media_id, full_path, library_id, first_seen_at, last_seen_at
+    )
+    SELECT id, full_path, library_id, COALESCE(created_at, updated_at), updated_at
+    FROM media_items
+  `);
+}
+
+function cacheArtworkLocally(database: Database): void {
+  // Artwork was stored as a provider URL, so every poster load depended on the
+  // provider still being up and reachable. These columns track a local copy so
+  // a cached image keeps rendering offline.
+  database.run(`ALTER TABLE metadata_artwork ADD COLUMN local_file TEXT`);
+  database.run(`ALTER TABLE metadata_artwork ADD COLUMN bytes INTEGER`);
+  database.run(`ALTER TABLE metadata_artwork ADD COLUMN cached_at TEXT`);
+  database.run(`
+    CREATE INDEX idx_metadata_artwork_cached ON metadata_artwork(cached_at)
+  `);
+}
+
+function createLogicalMediaSchema(database: Database): void {
+  // A show groups episodes; a title is one film or one episode; media_items
+  // rows become the playable versions underneath a title. IDs are derived, so
+  // rescanning never produces a second title for the same work.
+  database.run(`
+    CREATE TABLE shows (
+      id TEXT PRIMARY KEY,
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      year INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (library_id, name)
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE titles (
+      id TEXT PRIMARY KEY,
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('movie', 'episode', 'video')),
+      show_id TEXT REFERENCES shows(id) ON DELETE CASCADE,
+      season_number INTEGER,
+      episode_number INTEGER,
+      name TEXT NOT NULL,
+      year INTEGER,
+      natural_key TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  database.run('CREATE INDEX idx_titles_library ON titles(library_id, kind)');
+  database.run('CREATE INDEX idx_titles_show ON titles(show_id, season_number, episode_number)');
+
+  // Each file becomes a version of a title. SET NULL rather than CASCADE: a
+  // title disappearing must never take the indexed file with it.
+  database.run('ALTER TABLE media_items ADD COLUMN title_id TEXT REFERENCES titles(id) ON DELETE SET NULL');
+  database.run('CREATE INDEX idx_media_title_id ON media_items(title_id)');
+
+  // Stream records, normalised out of the streams_json blob.
+  database.run(`
+    CREATE TABLE media_streams (
+      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      stream_index INTEGER NOT NULL,
+      codec_type TEXT NOT NULL,
+      codec_name TEXT,
+      language TEXT,
+      title TEXT,
+      channels INTEGER,
+      channel_layout TEXT,
+      width INTEGER,
+      height INTEGER,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      is_forced INTEGER NOT NULL DEFAULT 0,
+      is_external INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (media_id, stream_index)
+    )
+  `);
+  database.run('CREATE INDEX idx_media_streams_type ON media_streams(media_id, codec_type)');
+
+  // Watch progress moves onto the logical title, so finishing a film on the 4K
+  // version and opening the 1080p one resumes where you left off. The existing
+  // per-file rows are kept and simply gain a title.
+  database.run('ALTER TABLE watch_progress ADD COLUMN title_id TEXT');
+  database.run('CREATE INDEX idx_progress_title ON watch_progress(user_id, title_id)');
+
+  backfillLogicalMedia(database);
+}
+
+/**
+ * Builds titles for everything already indexed.
+ *
+ * Runs in JavaScript rather than SQL because the identity derivation has to
+ * match what the scanner will use from now on; two implementations would drift.
+ */
+function backfillLogicalMedia(database: Database): void {
+  const rows = database.query(`
+    SELECT id, library_id, type, title, series_title, season_number, episode_number, year, streams_json
+    FROM media_items
+  `).all() as Array<Record<string, any>>;
+
+  const now = new Date().toISOString();
+  const seenShows = new Set<string>();
+  const seenTitles = new Set<string>();
+
+  for (const row of rows) {
+    const identity = titleIdentityFor({
+      libraryId: row.library_id,
+      type: row.type,
+      title: row.title,
+      seriesTitle: row.series_title,
+      seasonNumber: row.season_number,
+      episodeNumber: row.episode_number,
+      year: row.year
+    });
+
+    if (identity) {
+      if (identity.showId && !seenShows.has(identity.showId)) {
+        seenShows.add(identity.showId);
+        database.run(`
+          INSERT OR IGNORE INTO shows (id, library_id, name, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+        `, [identity.showId, identity.libraryId, row.series_title, now, now]);
+      }
+
+      if (!seenTitles.has(identity.id)) {
+        seenTitles.add(identity.id);
+        database.run(`
+          INSERT OR IGNORE INTO titles (
+            id, library_id, kind, show_id, season_number, episode_number,
+            name, year, natural_key, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          identity.id, identity.libraryId, identity.kind, identity.showId,
+          identity.seasonNumber, identity.episodeNumber,
+          identity.name, identity.year, identity.naturalKey, now, now
+        ]);
+      }
+
+      database.run('UPDATE media_items SET title_id = ? WHERE id = ?', [identity.id, row.id]);
+    }
+
+    backfillStreamsFor(database, row.id, row.streams_json);
+  }
+
+  // Give existing watch history its logical home.
+  database.run(`
+    UPDATE watch_progress
+    SET title_id = (SELECT m.title_id FROM media_items m WHERE m.id = watch_progress.media_id)
+    WHERE title_id IS NULL
+  `);
+}
+
+function backfillStreamsFor(database: Database, mediaId: string, streamsJson: unknown): void {
+  let streams: Array<Record<string, any>> = [];
+  try {
+    const parsed = JSON.parse(typeof streamsJson === 'string' ? streamsJson : '[]');
+    if (Array.isArray(parsed)) streams = parsed;
+  } catch {
+    // A malformed blob simply yields no normalised rows; the blob stays put.
+    return;
+  }
+
+  for (const stream of streams) {
+    if (!Number.isSafeInteger(stream?.index) || typeof stream?.codec_type !== 'string') continue;
+    database.run(`
+      INSERT OR IGNORE INTO media_streams (
+        media_id, stream_index, codec_type, codec_name, language, title,
+        channels, channel_layout, width, height, is_default, is_forced, is_external
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      mediaId, stream.index, stream.codec_type, stream.codec_name ?? null,
+      stream.language ?? null, stream.title ?? null,
+      stream.channels ?? null, stream.channel_layout ?? null,
+      stream.width ?? null, stream.height ?? null,
+      stream.is_default ? 1 : 0, stream.is_forced ? 1 : 0, stream.is_external ? 1 : 0
+    ]);
+  }
+}
+
+function createAutomaticScanSchema(database: Database): void {
+  // Per-library scanning policy. Both default to off: turning on a filesystem
+  // watcher without being asked would surprise an operator whose library sits
+  // on a network share.
+  database.run('ALTER TABLE libraries ADD COLUMN auto_scan INTEGER NOT NULL DEFAULT 0');
+  database.run('ALTER TABLE libraries ADD COLUMN watch_filesystem INTEGER NOT NULL DEFAULT 0');
+  database.run('ALTER TABLE libraries ADD COLUMN scan_interval_minutes INTEGER');
+
+  // The scan guard used to be one boolean in memory: global across libraries
+  // and forgotten on restart, so a crash mid-scan left nothing to clean up and
+  // two libraries could never scan independently.
+  database.run(`
+    CREATE TABLE library_scan_locks (
+      library_id TEXT PRIMARY KEY REFERENCES libraries(id) ON DELETE CASCADE,
+      owner TEXT NOT NULL,
+      acquired_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL
+    )
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -572,6 +896,36 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 15,
     name: 'scan_discovery_generations',
     up: createScanDiscoverySchema
+  },
+  {
+    version: 16,
+    name: 'remote_access_control_plane',
+    up: createRemoteAccessSchema
+  },
+  {
+    version: 17,
+    name: 'provider_metadata_and_artwork',
+    up: createMetadataSchema
+  },
+  {
+    version: 18,
+    name: 'media_path_history',
+    up: createMediaPathHistorySchema
+  },
+  {
+    version: 19,
+    name: 'local_artwork_cache',
+    up: cacheArtworkLocally
+  },
+  {
+    version: 20,
+    name: 'logical_media_titles',
+    up: createLogicalMediaSchema
+  },
+  {
+    version: 21,
+    name: 'automatic_library_scanning',
+    up: createAutomaticScanSchema
   }
 ];
 

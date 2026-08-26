@@ -1,15 +1,57 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { Play, RotateCcw, X, HardDrive, FileVideo, Volume2, Subtitles, Layers } from 'lucide-react';
-import type { MediaItem, MediaStreamTrack } from '../types';
+import type { MediaItem, MediaMetadata, MediaStreamTrack, MediaVersion } from '../types';
+import { api } from '../api';
 import { MarkerEditor } from '../features/markers/MarkerEditor';
+import { MetadataPanel, pickArtwork } from './MetadataPanel';
 
 interface MediaDetailModalProps {
   item: MediaItem;
   onClose: () => void;
   onPlay: (item: MediaItem) => void;
+  isAdmin?: boolean;
+  /** Switch the detail view to another file of the same title. */
+  onSelectVersion?: (mediaId: string) => void;
 }
 
-export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClose, onPlay }) => {
+export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
+  item,
+  onClose,
+  onPlay,
+  isAdmin = false,
+  onSelectVersion
+}) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
+  const [metadata, setMetadata] = useState<MediaMetadata | null>(null);
+  const [versions, setVersions] = useState<MediaVersion[]>([]);
+
+  // Descriptive metadata is optional decoration, so a failure here leaves the
+  // technical detail view intact rather than blocking it.
+  useEffect(() => {
+    let cancelled = false;
+    setMetadata(null);
+    setVersions([]);
+    api.getMediaDetail(item.id)
+      .then((result) => {
+        if (cancelled) return;
+        setMetadata(result.metadata);
+        setVersions(result.versions ?? []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMetadata(null);
+        setVersions([]);
+      });
+    return () => { cancelled = true; };
+  }, [item.id]);
+
+  const backdrop = pickArtwork(metadata, 'backdrop')
+    ?? pickArtwork(metadata, 'poster')
+    ?? item.poster_path;
+
   let streams: MediaStreamTrack[] = [];
   try {
     streams = JSON.parse(item.streams_json || '[]');
@@ -36,7 +78,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
 
   return (
     <div className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div
+      <div ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="media-detail-title"
@@ -44,8 +86,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
       >
         {/* Header / Backdrop Image */}
         <div className="relative aspect-video max-h-72 w-full bg-slate-950 overflow-hidden">
-          {item.poster_path ? (
-            <img src={item.poster_path} alt={item.title} className="w-full h-full object-cover" />
+          {backdrop ? (
+            <img src={backdrop} alt={item.title} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full bg-gradient-to-t from-slate-900 via-slate-950 to-slate-900" />
           )}
@@ -71,6 +113,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
             <h1 id="media-detail-title" className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               {item.title}
             </h1>
+            {metadata?.title && metadata.title !== item.title && (
+              <p className="mt-0.5 text-sm text-slate-400">{metadata.title}</p>
+            )}
             <div className="flex flex-wrap items-center gap-2.5 mt-2 text-xs text-slate-300">
               {item.year && <span className="text-slate-400">{item.year}</span>}
               {item.season_number && item.episode_number && (
@@ -137,6 +182,47 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({ item, onClos
               </button>
             )}
           </div>
+
+          {versions.length > 1 && (
+            <section className="space-y-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                {versions.length} versions
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {versions.map((version) => {
+                  const isCurrent = version.mediaId === item.id;
+                  return (
+                    <button
+                      key={version.mediaId}
+                      type="button"
+                      onClick={() => { if (!isCurrent) onSelectVersion?.(version.mediaId); }}
+                      aria-current={isCurrent}
+                      className={`rounded-lg border px-3 py-1.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 ${
+                        isCurrent
+                          ? 'border-blue-500/60 bg-blue-600/20 font-semibold text-blue-100'
+                          : 'border-white/10 text-slate-300 hover:bg-white/5'
+                      }`}
+                    >
+                      {version.label}
+                      {version.isPreferred && !isCurrent && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide text-slate-500">best</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-slate-500">
+                All versions share one watch position, so switching keeps your place.
+              </p>
+            </section>
+          )}
+
+          <MetadataPanel
+            mediaId={item.id}
+            metadata={metadata}
+            isAdmin={isAdmin}
+            onChange={setMetadata}
+          />
 
           {/* Technical Specs & Stream Tracks */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">

@@ -88,7 +88,7 @@ test('gates admin mutations, signs in, and changes a library setting', async ({ 
 
   await page.getByPlaceholder('e.g. Movies 4K').fill(SETTINGS_LIBRARY_NAME);
   await page.getByPlaceholder(/media\/movies/).fill(emptyLibraryDirectory);
-  await page.getByRole('combobox').selectOption('home_videos');
+  await page.getByTestId('settings-dialog').getByRole('combobox').selectOption('home_videos');
 
   const createResponse = page.waitForResponse(
     (response) =>
@@ -129,7 +129,7 @@ test('browses the movie library and combines resolution and title filters', asyn
 
   await expect(page.getByRole('heading', { name: MOONRISE_TITLE, exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: HARBOR_TITLE, exact: true })).toBeVisible();
-  await expect(page.getByText(/Showing\s+2\s+of\s+2\s+item\(s\)/)).toBeVisible();
+  await expect(page.getByText('Showing 2 of 2 items', { exact: true })).toBeVisible();
 
   const resolutionResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -140,7 +140,7 @@ test('browses the movie library and combines resolution and title filters', asyn
   await expect(page.getByRole('heading', { name: MOONRISE_TITLE, exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: HARBOR_TITLE, exact: true })).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'All', exact: true }).click();
+  await page.getByRole('button', { name: 'Any', exact: true }).click();
   const searchResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === '/api/media' && url.searchParams.get('search') === 'Harbor';
@@ -150,10 +150,10 @@ test('browses the movie library and combines resolution and title filters', asyn
 
   await expect(page.getByRole('heading', { name: HARBOR_TITLE, exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: MOONRISE_TITLE, exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Showing\s+1\s+of\s+1\s+item\(s\)/)).toBeVisible();
+  await expect(page.getByText('Showing 1 of 1 item', { exact: true })).toBeVisible();
 });
 
-test('opens direct playback and restores persisted resume progress', async ({ page }) => {
+test('opens playback and restores persisted resume progress', async ({ page }) => {
   await openCaster(page);
   await signInAsAdmin(page);
 
@@ -182,7 +182,11 @@ test('opens direct playback and restores persisted resume progress', async ({ pa
   await detailPlayButton.click();
   expect([200, 206]).toContain((await streamResponse).status());
   await expect(page.getByTitle('Back to library')).toBeVisible();
-  await expect(page.getByText(/Direct Play/)).toBeVisible();
+  await expect(
+    page.getByText('Converting because this video is higher resolution than your device supports.', {
+      exact: true
+    })
+  ).toBeVisible();
   await page.getByTitle('Back to library').click();
 
   const savedProgress = await fetchFromPage(page, {

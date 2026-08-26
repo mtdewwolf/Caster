@@ -11,6 +11,13 @@ import {
   startSessionPruner
 } from './auth';
 import { devicesRouter } from './routes/devices';
+import { createRemoteAccessRouter } from './routes/remote-access';
+import { createConnectionRouter } from './routes/connection';
+import { collectEndpointCandidates } from './remote/endpoints';
+import { RemoteAccessStore } from './db/remote-store';
+import { autoScanRuntime } from './scanner/runtime';
+import { resolvePrincipal } from './auth';
+import { db } from './db';
 import {
   apiRequestSecurity,
   openModeIsExplicitlyEnabled
@@ -27,6 +34,19 @@ const app = new Hono();
 app.use('/api/*', apiRequestSecurity);
 app.route('/api/auth', authRouter);
 app.route('/api/auth/devices', devicesRouter);
+
+// Remote access administration. Mounted ahead of the generic /api router so
+// its admin-gated routes are not shadowed by the catch-all API handler.
+app.route('/api/remote-access', createRemoteAccessRouter({
+  store: new RemoteAccessStore(db)
+}));
+
+// How clients discover the ways they can reach this server. Authenticated but
+// not admin-only: every client needs it to choose a route.
+app.route('/api/connection', createConnectionRouter({
+  collectEndpoints: () => collectEndpointCandidates(),
+  isAuthenticated: (c) => resolvePrincipal(c) !== null
+}));
 
 // Mount API router
 app.route('/api', apiRouter);
@@ -66,6 +86,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 if (import.meta.main) {
   startSessionPruner();
+  // Only libraries an operator has explicitly enabled are touched; with none
+  // enabled this starts a timer that finds nothing to do.
+  autoScanRuntime.start();
   console.log(`\n======================================================`);
   console.log(`🚀 Caster Media Server starting on http://${HOST}:${PORT}`);
   console.log(`🌐 Tailscale & Local Network Ready`);

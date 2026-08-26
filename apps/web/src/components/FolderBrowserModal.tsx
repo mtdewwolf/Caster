@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useFocusTrap } from '../features/a11y/focus-trap';
 import { X, Folder, ChevronRight, ArrowUp, RefreshCw, Film, CornerDownLeft } from 'lucide-react';
 import type { BrowseResult } from '../types';
 import { api } from '../api';
@@ -10,6 +11,9 @@ interface FolderBrowserModalProps {
 }
 
 export const FolderBrowserModal: React.FC<FolderBrowserModalProps> = ({ initialPath, onSelect, onClose }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
   const [browse, setBrowse] = useState<BrowseResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,10 +63,16 @@ export const FolderBrowserModal: React.FC<FolderBrowserModalProps> = ({ initialP
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="relative w-full max-w-xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="folder-browser-title"
+        className="relative w-full max-w-xl bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-slate-950/50">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+          <h3 id="folder-browser-title" className="text-sm font-bold text-white flex items-center gap-2">
             <Folder className="w-4 h-4 text-blue-400" />
             <span>Browse Server Folders</span>
           </h3>

@@ -128,7 +128,11 @@ describe('database migrations', () => {
             'watch_progress', 'settings', 'schema_migrations', 'auth_sessions',
             'users', 'user_credentials', 'user_library_access', 'user_permissions',
             'server_setup', 'account_invites', 'playlists', 'playlist_items',
-            'media_markers', 'library_scan_discoveries', 'devices', 'pairing_codes'
+            'media_markers', 'library_scan_discoveries', 'devices', 'pairing_codes',
+            'remote_registration', 'remote_heartbeat_log',
+            'media_metadata', 'metadata_artwork', 'metadata_fetch_log',
+            'media_path_history',
+            'shows', 'titles', 'media_streams', 'library_scan_locks'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -148,7 +152,13 @@ describe('database migrations', () => {
         { version: 12, name: 'account_provisioning' },
         { version: 13, name: 'provisioning_owner_delete_action' },
         { version: 14, name: 'device_identity_and_pairing' },
-        { version: 15, name: 'scan_discovery_generations' }
+        { version: 15, name: 'scan_discovery_generations' },
+        { version: 16, name: 'remote_access_control_plane' },
+        { version: 17, name: 'provider_metadata_and_artwork' },
+        { version: 18, name: 'media_path_history' },
+        { version: 19, name: 'local_artwork_cache' },
+        { version: 20, name: 'logical_media_titles' },
+        { version: 21, name: 'automatic_library_scanning' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
@@ -157,14 +167,24 @@ describe('database migrations', () => {
         'external_subtitles',
         'libraries',
         'library_scan_discoveries',
+        'library_scan_locks',
         'media_items',
         'media_markers',
+        'media_metadata',
+        'media_path_history',
+        'media_streams',
+        'metadata_artwork',
+        'metadata_fetch_log',
         'pairing_codes',
         'playlist_items',
         'playlists',
+        'remote_heartbeat_log',
+        'remote_registration',
         'schema_migrations',
         'server_setup',
         'settings',
+        'shows',
+        'titles',
         'user_credentials',
         'user_library_access',
         'user_permissions',
@@ -237,7 +257,8 @@ describe('database migrations', () => {
       expect(oldIndex).toBeNull();
       expect(newIndex).toEqual({ name: 'idx_progress_user_last_watched' });
       expect(database.query('SELECT COUNT(*) AS count FROM watch_progress').get()).toEqual({ count: 2 });
-      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 15 });
+      expect(database.query('SELECT COUNT(*) AS count FROM schema_migrations').get())
+        .toEqual({ count: DATABASE_MIGRATIONS.length });
       expect(database.query(`
         SELECT id, username, role, active FROM users WHERE id = 'admin'
       `).get()).toEqual({ id: 'admin', username: 'admin', role: 'admin', active: 1 });

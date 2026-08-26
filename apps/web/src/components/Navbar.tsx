@@ -1,9 +1,9 @@
 import React from 'react';
-import { Film, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut, UsersRound } from 'lucide-react';
+import { Film, Home, Search, Settings, Shield, Sparkles, Tv, Music, Clapperboard, History, LockKeyhole, LogOut, UsersRound } from 'lucide-react';
 import type { AuthUser } from '../api';
 import type { SystemHardwareStatus } from '../types';
 
-export type AppView = 'library' | 'progress';
+export type AppView = 'home' | 'library' | 'progress';
 
 interface NavbarProps {
   activeType: string;
@@ -66,6 +66,20 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Categories */}
         <nav className="hidden md:flex items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-white/5 text-xs font-medium">
+          <button
+            onClick={() => {
+              onViewChange('home');
+              onTypeChange('');
+            }}
+            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+              activeView === 'home'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Home</span>
+          </button>
           <button
             onClick={() => {
               onViewChange('library');

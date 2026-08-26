@@ -1,4 +1,8 @@
-import type { AlbumSummary, ArtistSummary, BrowseResult, Library, MediaItem, PlaybackDescriptor, ScanStatus, Series, SeriesSeason, SystemHardwareStatus } from './types';
+import type { AlbumSummary, ArtistSummary, BrowseResult, Library, MediaItem,
+  MediaMetadata,
+  MediaVersion,
+  MetadataCandidate,
+  PlaybackDecision, PlaybackDescriptor, ScanStatus, Series, SeriesSeason, SystemHardwareStatus } from './types';
 
 const API_BASE = '/api';
 export const AUTH_INVALIDATED_EVENT = 'caster:auth-invalidated';
@@ -240,6 +244,9 @@ export const api = {
     type?: string;
     search?: string;
     resolution?: string;
+    genre?: string;
+    watched?: string;
+    hdr?: boolean;
     sort?: string;
     limit?: number;
     offset?: number;
@@ -249,11 +256,37 @@ export const api = {
     if (params.type) query.set('type', params.type);
     if (params.search) query.set('search', params.search);
     if (params.resolution) query.set('resolution', params.resolution);
+    if (params.genre) query.set('genre', params.genre);
+    if (params.watched && params.watched !== 'all') query.set('watched', params.watched);
+    if (params.hdr) query.set('hdr', 'true');
     if (params.sort) query.set('sort', params.sort);
     if (params.limit) query.set('limit', params.limit.toString());
     if (params.offset) query.set('offset', params.offset.toString());
 
     return request(`/media?${query.toString()}`);
+  },
+
+  async getHomeRows(): Promise<{
+    continueWatching: MediaItem[];
+    nextUp: MediaItem[];
+    recentlyAdded: MediaItem[];
+    recentlyWatched: MediaItem[];
+  }> {
+    const data = await request<{ rows: Record<string, MediaItem[]> }>('/media/home');
+    return {
+      continueWatching: data.rows?.continueWatching || [],
+      nextUp: data.rows?.nextUp || [],
+      recentlyAdded: data.rows?.recentlyAdded || [],
+      recentlyWatched: data.rows?.recentlyWatched || []
+    };
+  },
+
+  async getGenres(params: { libraryId?: string; type?: string } = {}): Promise<string[]> {
+    const query = new URLSearchParams();
+    if (params.libraryId) query.set('libraryId', params.libraryId);
+    if (params.type) query.set('type', params.type);
+    const data = await request<{ genres: string[] }>(`/media/genres?${query.toString()}`);
+    return data.genres || [];
   },
 
   async getContinueWatching(): Promise<MediaItem[]> {
@@ -300,6 +333,53 @@ export const api = {
   async getMediaItem(id: string): Promise<MediaItem> {
     const data = await request<{ item: MediaItem }>(`/media/${id}`);
     return data.item;
+  },
+
+  /** Item plus everything a detail view needs, in one request. */
+  getMediaDetail(id: string, capabilities?: string): Promise<{
+    item: MediaItem;
+    metadata: MediaMetadata | null;
+    versions: MediaVersion[];
+    playback: PlaybackDecision;
+  }> {
+    return request(`/media/${id}${capabilities ? `?${capabilities}` : ''}`);
+  },
+
+  getMediaMetadata(id: string): Promise<{
+    metadata: MediaMetadata | null;
+    supported: boolean;
+  }> {
+    return request(`/media/${id}/metadata`);
+  },
+
+  async getMetadataCandidates(id: string, query?: string): Promise<MetadataCandidate[]> {
+    const search = new URLSearchParams();
+    if (query) search.set('query', query);
+    const data = await request<{ candidates: MetadataCandidate[] }>(
+      `/media/${id}/metadata/candidates?${search.toString()}`
+    );
+    return data.candidates || [];
+  },
+
+  async applyMetadataMatch(id: string, candidate: MetadataCandidate): Promise<MediaMetadata | null> {
+    const data = await request<{ metadata: MediaMetadata | null }>(`/media/${id}/metadata/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        providerId: candidate.providerId,
+        externalId: candidate.externalId,
+        entityType: candidate.entityType
+      })
+    });
+    return data.metadata;
+  },
+
+  refreshMetadata(id: string): Promise<{ status: string; message?: string; metadata: MediaMetadata | null }> {
+    return request(`/media/${id}/metadata/refresh`, { method: 'POST' });
+  },
+
+  async clearMetadata(id: string): Promise<void> {
+    await request(`/media/${id}/metadata`, { method: 'DELETE' });
   },
 
   getPlaybackDescriptor(id: string): Promise<PlaybackDescriptor> {

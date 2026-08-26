@@ -92,7 +92,7 @@ describe('media identity reconciliation', () => {
       newId: 'new-id'
     });
 
-    expect(resolved).toEqual({ id: 'stable-id', kind: 'reconciled' });
+    expect(resolved).toEqual({ id: 'stable-id', kind: 'reconciled', via: 'same-library' });
     expect(database.query(`
       SELECT id, full_path, relative_path FROM media_items WHERE id = 'stable-id'
     `).get()).toEqual({
