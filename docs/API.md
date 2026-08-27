@@ -26,7 +26,7 @@ content types.
 
 | Group | Examples | Purpose |
 | --- | --- | --- |
-| Libraries | `GET /api/libraries`, `POST /api/libraries`, `DELETE /api/libraries/:id` | Manage libraries and scan them. |
+| Libraries | `GET /api/libraries`, `POST /api/libraries`, `POST /api/libraries/:id/paths`, `DELETE /api/libraries/:id/paths`, `DELETE /api/libraries/:id` | Manage libraries, the folders each one spans, and scan them. |
 | Media | `GET /api/media`, `GET /api/media/:id` | Browse, search, filter, and inspect indexed media. |
 | Playback | `GET /api/media/:id/stream`, `/hls/...`, `/subtitles/...` | Direct play and adaptive playback. |
 | Progress | `/api/media/:id/progress`, `/api/media/progress` | Read and update the shared household watch history. |
@@ -36,6 +36,25 @@ content types.
 | Watch Together | `/api/watch-rooms...` | Create rooms and coordinate playback with an invite fragment. |
 | System | `/api/system/status`, `/api/system/transcodes` | Inspect server, hardware, cache, and transcode state. |
 | Remote access | `/api/remote-access/status` | Inspect the optional remote-access control plane. |
+
+### Libraries span several folders
+
+A library covers a set of folders, not one. `POST /api/libraries` accepts
+`paths` (an array) or `path` (a single folder, equivalent to a one-element
+`paths`), and every library in `GET /api/libraries` carries a `paths` array.
+The `path` field remains and always names the first entry of `paths`.
+
+```http
+POST /api/libraries          { "name": "Movies", "paths": ["/media/movies", "/mnt/archive/movies"], "type": "movies" }
+POST /api/libraries/:id/paths   { "path": "/mnt/new-pool/movies" }
+DELETE /api/libraries/:id/paths { "path": "/mnt/archive/movies" }
+```
+
+Adding a folder rescans the library. Removing one drops the media it
+contributed from the catalog and leaves the files on disk untouched. Folders
+that overlap — one nested inside another — are rejected with 409, because
+scanning both would index the same file twice. A library's last folder cannot
+be removed; delete the library instead.
 
 All API routes are available immediately without account setup. The browser
 client sends no Caster credentials. Progress and playlists intentionally use

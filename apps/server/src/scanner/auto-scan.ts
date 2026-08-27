@@ -1,6 +1,7 @@
 import fs from 'fs';
 import type { Database } from 'bun:sqlite';
 import { ScanLockStore, readLibrarySchedules } from '../db/scan-lock-store';
+import { listAllLibraryRoots } from '../db/library-roots';
 import {
   DEFAULT_DEBOUNCE_MS,
   isRelevantChange,
@@ -37,6 +38,14 @@ interface WatchedLibrary {
   watcher: fs.FSWatcher;
 }
 
+/**
+ * A library spanning several directories needs one watcher per directory, so
+ * watchers are keyed by both. A NUL separator cannot occur in either part.
+ */
+function watchKey(libraryId: string, rootPath: string): string {
+  return `${libraryId}\u0000${rootPath}`;
+}
+
 export class AutoScanRuntime {
   readonly #database: Database;
   readonly #scanLibrary: (libraryId: string) => Promise<unknown>;
@@ -65,8 +74,14 @@ export class AutoScanRuntime {
     this.#locks = new ScanLockStore(this.#database);
   }
 
+  /** Libraries with at least one directory being watched. */
   get watchedLibraryIds(): string[] {
-    return [...this.#watchers.keys()];
+    return [...new Set([...this.#watchers.values()].map((watched) => watched.libraryId))];
+  }
+
+  /** Every directory currently being watched. */
+  get watchedPaths(): string[] {
+    return [...this.#watchers.values()].map((watched) => watched.path);
   }
 
   get pendingLibraryIds(): string[] {
@@ -101,45 +116,55 @@ export class AutoScanRuntime {
     this.#pending.clear();
   }
 
-  /** Starts and stops watchers to match the current library settings. */
+  /**
+   * Starts and stops watchers to match the current library settings.
+   *
+   * One watcher per directory, not per library: a library assembled from three
+   * mounts is only watched if all three are.
+   */
   syncWatchers(): void {
-    const libraries = this.#database.query(`
-      SELECT id, path, watch_filesystem FROM libraries
-    `).all() as Array<{ id: string; path: string; watch_filesystem: number }>;
-
-    const wanted = new Map(
-      libraries.filter((row) => row.watch_filesystem === 1).map((row) => [row.id, row.path])
+    const watchedLibraries = new Set(
+      (this.#database.query(
+        'SELECT id FROM libraries WHERE watch_filesystem = 1'
+      ).all() as Array<{ id: string }>).map((row) => row.id)
     );
 
-    for (const [libraryId, watched] of this.#watchers) {
-      if (wanted.get(libraryId) === watched.path) continue;
+    const wanted = new Map<string, { libraryId: string; path: string }>();
+    for (const root of listAllLibraryRoots(this.#database)) {
+      if (!watchedLibraries.has(root.libraryId)) continue;
+      wanted.set(watchKey(root.libraryId, root.path), { libraryId: root.libraryId, path: root.path });
+    }
+
+    for (const [key, watched] of this.#watchers) {
+      if (wanted.has(key)) continue;
       try {
         watched.watcher.close();
       } catch {
         // Already gone.
       }
-      this.#watchers.delete(libraryId);
+      this.#watchers.delete(key);
     }
 
-    for (const [libraryId, libraryPath] of wanted) {
-      if (this.#watchers.has(libraryId)) continue;
-      this.#startWatching(libraryId, libraryPath);
+    for (const [key, target] of wanted) {
+      if (this.#watchers.has(key)) continue;
+      this.#startWatching(key, target.libraryId, target.path);
     }
   }
 
-  #startWatching(libraryId: string, libraryPath: string): void {
+  #startWatching(key: string, libraryId: string, libraryPath: string): void {
     try {
       const watcher = this.#watch(libraryPath, { recursive: true }, (_event, fileName) => {
         if (!isRelevantChange(typeof fileName === 'string' ? fileName : null)) return;
+        // Any root changing means the library is due; the scan covers them all.
         this.#pending.set(libraryId, { libraryId, lastEventAt: this.#now() });
       });
 
       watcher.on('error', (error) => {
         this.#warn(`Stopped watching ${libraryPath}:`, error);
-        this.#watchers.delete(libraryId);
+        this.#watchers.delete(key);
       });
 
-      this.#watchers.set(libraryId, { libraryId, path: libraryPath, watcher });
+      this.#watchers.set(key, { libraryId, path: libraryPath, watcher });
       this.#log(`Watching ${libraryPath} for changes.`);
     } catch (error) {
       // Recursive watching is unavailable on some platforms and most network

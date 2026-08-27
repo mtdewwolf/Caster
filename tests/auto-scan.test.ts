@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { runDatabaseMigrations } from '../apps/server/src/db/migrations';
 import { AutoScanRuntime } from '../apps/server/src/scanner/auto-scan';
 import { ScanLockStore, updateLibrarySchedule } from '../apps/server/src/db/scan-lock-store';
+import { addLibraryRoot } from '../apps/server/src/db/library-roots';
 
 describe('automatic scanning', () => {
   let database: Database;
@@ -161,6 +162,31 @@ describe('automatic scanning', () => {
 
     expect(() => auto.syncWatchers()).not.toThrow();
     expect(auto.watchedLibraryIds).toEqual([]);
+  });
+
+  it('watches every folder of a library that spans several', () => {
+    addLibrary('films', new Date(START).toISOString());
+    const archive = addLibraryRoot(database, 'films', '/media/films-archive');
+    updateLibrarySchedule(database, 'films', {
+      autoScan: true, watchFilesystem: true, scanIntervalMinutes: 600
+    });
+
+    const events: Array<(event: string, name: string) => void> = [];
+    const auto = runtime({
+      watch: ((_path: string, _options: unknown, listener: any) => {
+        events.push(listener);
+        return { close: () => {}, on: () => {} } as any;
+      }) as any
+    });
+    auto.syncWatchers();
+
+    // One watcher per folder, but still one library.
+    expect(auto.watchedPaths).toEqual(archive.paths);
+    expect(auto.watchedLibraryIds).toEqual(['films']);
+
+    // A change anywhere in the library is a change to the library.
+    events[1]!('rename', 'New Film.mkv');
+    expect(auto.pendingLibraryIds).toEqual(['films']);
   });
 
   it('stops watching a library that was turned off', () => {

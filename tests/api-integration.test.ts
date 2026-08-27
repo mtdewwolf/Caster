@@ -85,6 +85,73 @@ describe('API integration regressions', () => {
     expect(results.every((result) => result.status !== 401 && result.status !== 403)).toBe(true);
   });
 
+  it('adds and removes the folders a library is made of', async () => {
+    // Empty folders: the background rescan each change triggers has nothing to
+    // find, so it cannot disturb the fixture library the other tests use.
+    const prefix = path.join(os.tmpdir(), 'caster-api-roots-');
+    const first = fs.mkdtempSync(`${prefix}a-`);
+    const second = fs.mkdtempSync(`${prefix}b-`);
+    let createdId = '';
+
+    try {
+      const created = await request('/api/libraries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Split Library', paths: [first, second], type: 'movies' })
+      });
+      expect(created.status).toBe(200);
+      const createdLibrary = (await created.json()).library;
+      createdId = createdLibrary.id;
+      expect(createdLibrary.paths).toEqual([first, second]);
+      expect(createdLibrary.path).toBe(first);
+
+      const duplicate = await request(`/api/libraries/${createdId}/paths`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: second })
+      });
+      expect(duplicate.status).toBe(409);
+      expect(await duplicate.json()).toMatchObject({
+        error: 'That folder is already part of this library'
+      });
+
+      // Scanning a folder and its parent into one library would index the same
+      // files twice.
+      const insideSecond = path.join(second, 'inside');
+      fs.mkdirSync(insideSecond, { recursive: true });
+      const nested = await request(`/api/libraries/${createdId}/paths`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: insideSecond })
+      });
+      expect(nested.status).toBe(409);
+      expect((await nested.json()).error).toContain(second);
+
+      const removed = await request(`/api/libraries/${createdId}/paths`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: first })
+      });
+      expect(removed.status).toBe(200);
+      expect((await removed.json()).library).toMatchObject({ path: second, paths: [second] });
+
+      const lastOne = await request(`/api/libraries/${createdId}/paths`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: second })
+      });
+      expect(lastOne.status).toBe(409);
+      expect(await lastOne.json()).toMatchObject({
+        error: 'A library must keep at least one folder. Delete the library instead.'
+      });
+    } finally {
+      if (createdId) LibraryModel.delete(createdId);
+      for (const root of [first, second]) {
+        if (root.startsWith(prefix)) fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('returns stable 400 responses for malformed JSON bodies', async () => {
     const requests = [
       { path: '/api/libraries', method: 'POST' },
@@ -130,7 +197,9 @@ describe('API integration regressions', () => {
     expect(invalidType.status).toBe(400);
     expect(await invalidType.json()).toEqual({ error: 'Invalid library type' });
     expect(invalidPath.status).toBe(400);
-    expect(await invalidPath.json()).toEqual({ error: 'Library path not found or not accessible' });
+    expect(await invalidPath.json()).toEqual({
+      error: `Folder not found or not accessible: ${path.join(fixtureRoot, 'does-not-exist')}`
+    });
     expect(missingScan.status).toBe(404);
     expect(await missingScan.json()).toEqual({ error: 'Library not found' });
     expect(invalidLimit.status).toBe(400);

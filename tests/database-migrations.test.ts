@@ -132,7 +132,8 @@ describe('database migrations', () => {
             'remote_registration', 'remote_heartbeat_log',
             'media_metadata', 'metadata_artwork', 'metadata_fetch_log',
             'media_path_history',
-            'shows', 'titles', 'media_streams', 'library_scan_locks'
+            'shows', 'titles', 'media_streams', 'library_scan_locks',
+            'library_roots'
           )
         ORDER BY name
       `).all() as Array<{ name: string }>;
@@ -158,7 +159,8 @@ describe('database migrations', () => {
         { version: 18, name: 'media_path_history' },
         { version: 19, name: 'local_artwork_cache' },
         { version: 20, name: 'logical_media_titles' },
-        { version: 21, name: 'automatic_library_scanning' }
+        { version: 21, name: 'automatic_library_scanning' },
+        { version: 22, name: 'library_multiple_roots' }
       ]);
       expect(requiredTables.map((row) => row.name)).toEqual([
         'account_invites',
@@ -166,6 +168,7 @@ describe('database migrations', () => {
         'devices',
         'external_subtitles',
         'libraries',
+        'library_roots',
         'library_scan_discoveries',
         'library_scan_locks',
         'media_items',

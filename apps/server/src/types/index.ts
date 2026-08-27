@@ -104,7 +104,16 @@ export interface MediaItem {
 export interface Library {
   id: string;
   name: string;
+  /**
+   * The library's first root directory.
+   *
+   * A library can span several directories; `paths` is the whole list. This
+   * field stays for older clients and older queries, and always names one of
+   * the directories in `paths`.
+   */
   path: string;
+  /** Every root directory scanned into this library, oldest first. */
+  paths: string[];
   type: LibraryType;
   last_scanned_at?: string;
   item_count: number;
