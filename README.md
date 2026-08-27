@@ -78,9 +78,11 @@ See the detailed setup guides in `docs/`:
 
 ```bash
 cd docker
-docker compose up -d
+CASTER_MEDIA_PATH=/mnt/tank/media docker compose -f docker-compose.test.yml up -d --build
 ```
 
 Open `http://SERVER_IP:3001` from the host's LAN. No account claim or credential
 setup is required. The data volume must remain persistent because it contains
-the database and watch history.
+the database and watch history. When Tailscale already runs on the host, the
+same published port is available at `http://TAILSCALE_IP:3001`; do not start the
+Tailscale sidecar Compose file as well.

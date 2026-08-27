@@ -114,18 +114,17 @@ jobs:
         run: >-
           docker run --detach
           --name caster-ci
-          --env ADMIN_PASSWORD=ci-smoke-password-not-for-production
           --publish 127.0.0.1:3001:3001
           caster:ci
 
-      - name: Verify health, authentication, and web assets
+      - name: Verify health, account-free API, and web assets
         shell: bash
         run: |
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:3001/health > /tmp/caster-health.json; then
               grep --fixed-strings '"status":"ok"' /tmp/caster-health.json
-              curl --fail --silent http://127.0.0.1:3001/api/auth/session \
-                | grep --fixed-strings '"configured":true'
+              curl --fail --silent http://127.0.0.1:3001/api/system/status \
+                | grep --fixed-strings '"server":"Caster Personal Media Server"'
               curl --fail --silent --output /dev/null http://127.0.0.1:3001/
               exit 0
             fi

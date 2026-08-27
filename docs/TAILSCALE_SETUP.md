@@ -37,6 +37,19 @@ If you already have Tailscale running directly on your TrueNAS SCALE host:
    http://truenas-nas:3001
    ```
 
+For a first Docker test on a host where Tailscale is already active, publish
+Caster normally on the host network:
+
+```bash
+cd docker
+CASTER_MEDIA_PATH=/mnt/tank/media docker compose -f docker-compose.test.yml up -d --build
+curl -fsS http://127.0.0.1:3001/health
+```
+
+Then verify `http://<truenas-tailscale-ip>:3001/health` from a second tailnet
+device. Do not run the sidecar configuration at the same time as host-level
+Tailscale.
+
 ---
 
 ### Method B: Tailscale Container Sidecar (`docker-compose.tailscale.yml`)
@@ -57,8 +70,9 @@ second application manager on TrueNAS; use the TrueNAS Apps workflow above.
    ```text
    http://caster-nas:3001
    ```
-5. Complete the one-time owner setup. The Compose file permits this claim from
-   Tailscale's `100.64.0.0/10` range; normal access still requires an account.
+5. Open Caster and add libraries using their container paths. Caster currently
+   runs account-free, so keep access restricted to trusted LAN and tailnet
+   devices.
 
 ---
 

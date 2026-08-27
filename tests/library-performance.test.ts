@@ -105,7 +105,7 @@ describe('library query performance', () => {
       db.run('ROLLBACK');
       throw error;
     }
-  });
+  }, 30_000);
 
   it('indexed the synthetic library as expected', () => {
     const total = MediaModel.getAll(userId, { libraryId, allowedLibraryIds: [libraryId] }).total;

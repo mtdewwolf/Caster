@@ -37,9 +37,6 @@ services:
       - TRANSCODE_MAX_CONCURRENT=${TRANSCODE_MAX_CONCURRENT:-2}
       - TRANSCODE_CACHE_MAX_AGE_HOURS=${TRANSCODE_CACHE_MAX_AGE_HOURS:-24}
       - TRANSCODE_CACHE_MAX_SIZE_MB=${TRANSCODE_CACHE_MAX_SIZE_MB:-10000}
-      # Tailscale uses 100.64.0.0/10, which must be explicitly allowed for
-      # the one-time owner claim. This does not grant normal application access.
-      - CASTER_SETUP_NETWORKS=100.64.0.0/10
       - TZ=America/New_York
     volumes:
       - /mnt/tank/appdata/caster/data:/app/data

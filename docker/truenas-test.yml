@@ -1,0 +1,38 @@
+# Caster test deployment for TrueNAS SCALE's Apps > Install via YAML flow.
+#
+# Before saving, replace:
+#   - REPLACE_WITH_RELEASE_ID with the directory name of the staged checkout.
+#   - 3000:3000 with the UID:GID of the TrueNAS `caster` service account.
+#   - /mnt/tank paths with the actual dataset paths on this system.
+#   - America/Denver with the host timezone.
+#
+# The source checkout must already exist on the TrueNAS host because the Apps
+# service performs the Docker build from the absolute context below.
+services:
+  caster:
+    build:
+      context: /mnt/tank/appdata/caster/source/REPLACE_WITH_RELEASE_ID
+      dockerfile: /mnt/tank/appdata/caster/source/REPLACE_WITH_RELEASE_ID/docker/Dockerfile
+    image: caster-local:REPLACE_WITH_RELEASE_ID
+    user: "3000:3000"
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      HOST: "0.0.0.0"
+      MEDIA_DATA_DIR: /app/data
+      THUMBNAILS_DIR: /app/data/thumbnails
+      TRANSCODE_CACHE_DIR: /app/data/transcode_cache
+      TRANSCODE_MAX_CONCURRENT: "2"
+      TRANSCODE_CACHE_MAX_AGE_HOURS: "24"
+      TRANSCODE_CACHE_MAX_SIZE_MB: "10000"
+      TZ: America/Denver
+    volumes:
+      - type: bind
+        source: /mnt/tank/appdata/caster/data
+        target: /app/data
+      - type: bind
+        source: /mnt/tank/media
+        target: /media
+        read_only: true

@@ -11,7 +11,7 @@ GitHub branch protection for `Master` to require these checks:
 Require branches to be up to date before merging and do not allow a release to
 bypass a failed or pending check. The container check builds the locked
 production image, fails on fixed critical vulnerabilities or an end-of-life
-base OS, starts the image, and verifies health, authentication configuration,
+base OS, starts the image, and verifies health, account-free API availability,
 and web assets.
 
 ## Release checklist
@@ -25,7 +25,7 @@ and web assets.
    or source checkout and database backup until the update is accepted.
 4. Tag or publish only the verified commit. Use an immutable version or digest;
    do not retag an unrelated local build as the release.
-5. After deployment, verify `/health`, admin login, a library scan, direct
+5. After deployment, verify `/health`, `/api/system/status`, a library scan, direct
    playback, a forced transcode with CPU fallback available, subtitles, and
    progress persistence.
 6. If validation fails, stop Caster, restore the prior application version,

@@ -10,10 +10,9 @@ TrueNAS LAN address. Internet access is needed only when downloading source and
 building the container image. Remote access is optional; see
 [TAILSCALE_SETUP.md](TAILSCALE_SETUP.md).
 
-> Caster read endpoints, including browsing and streaming, are intentionally
-> available without a login. Administrative changes require the configured
-> password or token. Keep port `3001` on a trusted LAN or VLAN and do not expose
-> it directly to the public internet.
+> Caster currently runs account-free. Browsing, streaming, and administrative
+> API routes are available without a login. Keep port `3001` on a trusted LAN,
+> VLAN, or tailnet and do not expose it directly to the public internet.
 
 ## Supported TrueNAS deployment path
 
@@ -143,8 +142,7 @@ Paste the following configuration after making all of these replacements:
   source directory name.
 - Replace `3000:3000` with the recorded Caster UID and GID.
 - Replace all `/mnt/tank/...` paths with this system's dataset paths.
-- Replace the timezone. Owner credentials are created in Caster after startup
-  and are never placed in the application configuration.
+- Replace the timezone.
 
 ```yaml
 services:
@@ -214,8 +212,8 @@ read-only. If the service repeatedly restarts, check data-dataset ACLs and the
 numeric `user` value before granting broader permissions or using privileged
 mode.
 
-From a LAN client, complete the one-time owner setup in the browser. Then open
-**Settings** and add libraries by their container paths, for example
+From a LAN or trusted tailnet client, open **Settings** and add libraries by
+their container paths, for example
 `/media/movies`, `/media/tv`, or `/media/music`.
 Never enter the host path `/mnt/tank/media` in Caster.
 
@@ -335,8 +333,8 @@ guide.
 - Snapshot and replicate `tank/appdata/caster/data` according to the site's
   recovery objectives. Create the Caster SQLite backup first, or stop Caster
   before taking a filesystem-only snapshot of the live database.
-- Keep the Compose YAML, release/commit ID, UID/GID, GPU GIDs, and password or
-  token in the administrator's protected configuration records.
+- Keep the Compose YAML, release/commit ID, UID/GID, and GPU GIDs in the
+  administrator's protected configuration records.
 - Export the TrueNAS system configuration, including the password secret seed,
   to protected external storage. This configuration export does not contain the
   Caster host-path dataset.
@@ -356,7 +354,7 @@ known-good deployment.
 3. In **Apps > Installed > Caster > Edit**, change both build paths and the
    `image` tag to the new release ID. Do not use `latest`.
 4. Save and wait for Caster to return to the Running state.
-5. Verify `/health`, admin login, a library scan, direct playback, a forced
+5. Verify `/health`, `/api/system/status`, a library scan, direct playback, a forced
    transcode, subtitles, and write progress before removing any prior image or
    source directory.
 
