@@ -10,6 +10,7 @@ import { db, ExternalSubtitleModel, LibraryModel, MediaModel } from '../db';
 import { MediaIdentityStore } from '../db/media-identity-store';
 import { TitleStore } from '../db/title-store';
 import { ScanLockStore } from '../db/scan-lock-store';
+import { rootForPath } from '../db/library-roots';
 import { enqueueMediaMarkerAnalysis } from '../markers';
 import { metadataEnrichment } from '../metadata/runtime';
 import { metadataStore } from '../metadata/runtime';
@@ -87,7 +88,10 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
     // A generation identifies one filesystem snapshot. It is deliberately
     // created before discovery so every stage of this scan uses the same ID.
     const scanGenerationId = crypto.randomUUID();
-    const discovery = findMediaFiles(library.path, library.type);
+    // A library can span several directories. They are discovered as one
+    // snapshot so reconciliation sees the whole library, not one root at a
+    // time — reconciling per root would delete every other root's media.
+    const discovery = findMediaFiles(libraryRoots(library), library.type);
     const currentLibraryPaths = new Set(discovery.files);
     scanStatus.totalFiles = discovery.files.length;
 
@@ -103,7 +107,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
       MediaModel.stageDiscoveredPaths(library.id, scanGenerationId, discovery.files);
       staged = true;
     } catch (error) {
-      recordScanError(`Error staging discovered paths for ${library.path}: ${errorMessage(error)}`, error);
+      recordScanError(`Error staging discovered paths for ${describeLibrary(library)}: ${errorMessage(error)}`, error);
     }
 
     if (staged) {
@@ -131,7 +135,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
         titleStore.pruneEmpty();
         metadataStore.pruneOrphanedMedia();
       } catch (error) {
-        recordScanError(`Error pruning orphaned metadata for ${library.path}: ${errorMessage(error)}`, error);
+        recordScanError(`Error pruning orphaned metadata for ${describeLibrary(library)}: ${errorMessage(error)}`, error);
       }
     }
 
@@ -140,7 +144,7 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
       errors: scanStatus.errors.length
     };
   } catch (error) {
-    recordScanError(`Library scan failed for ${library.path}: ${errorMessage(error)}`, error);
+    recordScanError(`Library scan failed for ${describeLibrary(library)}: ${errorMessage(error)}`, error);
     return {
       processed: scanStatus.processedFiles,
       errors: scanStatus.errors.length
@@ -152,8 +156,25 @@ export async function scanLibrary(libraryId: string): Promise<{ processed: numbe
   }
 }
 
-function findMediaFiles(dirPath: string, libraryType: Library['type']): MediaDiscoveryResult {
-  const results: string[] = [];
+/**
+ * The directories a library covers.
+ *
+ * `paths` is the real answer; `path` is the fallback for a library row written
+ * before roots existed, or by a tool that only knew about the column.
+ */
+function libraryRoots(library: Library): string[] {
+  return library.paths?.length ? library.paths : [library.path];
+}
+
+function describeLibrary(library: Library): string {
+  return `${library.name} (${libraryRoots(library).join(', ')})`;
+}
+
+function findMediaFiles(roots: readonly string[], libraryType: Library['type']): MediaDiscoveryResult {
+  // Roots are kept from overlapping when they are added, but a symlink or a
+  // bind mount can still lead two of them to the same file. Dedupe, because a
+  // file indexed twice is a duplicate the catalog cannot explain.
+  const results = new Set<string>();
   const errors: string[] = [];
   let complete = true;
 
@@ -177,17 +198,19 @@ function findMediaFiles(dirPath: string, libraryType: Library['type']): MediaDis
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         if (libraryType === 'music') {
-          if (AUDIO_EXTENSIONS.has(ext)) results.push(full);
+          if (AUDIO_EXTENSIONS.has(ext)) results.add(full);
         } else {
-          if (VIDEO_EXTENSIONS.has(ext)) results.push(full);
+          if (VIDEO_EXTENSIONS.has(ext)) results.add(full);
         }
       }
     }
   }
 
-  walk(dirPath);
-  results.sort();
-  return { files: results, complete, errors };
+  for (const root of roots) {
+    walk(root);
+  }
+
+  return { files: [...results].sort(), complete, errors };
 }
 
 function errorMessage(error: unknown): string {
@@ -209,7 +232,11 @@ async function processMediaFile(
   currentLibraryPaths: ReadonlySet<string>
 ): Promise<void> {
   const filename = path.basename(filePath);
-  const relativePath = path.relative(library.path, filePath);
+  // Relative paths are what the UI shows and what filename parsing works from,
+  // so they must be relative to the root this file came from. Measuring against
+  // the wrong root of a multi-directory library yields a path full of "..".
+  const root = rootForPath(libraryRoots(library), filePath) ?? library.path;
+  const relativePath = path.relative(root, filePath);
   const stats = fs.statSync(filePath);
 
   const fingerprint = contentFingerprint(filePath);
@@ -228,7 +255,7 @@ async function processMediaFile(
   const musicTags = parsed.type === 'track'
     ? normalizeMusicTags(metadata?.format_tags, {
         filePath,
-        libraryPath: library.path,
+        libraryPath: root,
         fallbackTitle: parsed.title
       })
     : undefined;

@@ -821,6 +821,37 @@ function createAutomaticScanSchema(database: Database): void {
   `);
 }
 
+function createLibraryRootsSchema(database: Database): void {
+  // A library used to be exactly one directory, because `libraries.path` was the
+  // only place a directory could be recorded. Collections rarely stay on one
+  // mount: a pool fills up, a second dataset is added, and the operator is left
+  // with "Movies" and "Movies 2" that share nothing but a name — two rows in
+  // the sidebar, two scans, and a series split across both.
+  //
+  // Roots therefore live in their own table, so one library can span any number
+  // of directories. `libraries.path` is kept in step with the first root so
+  // anything still reading that column sees a real directory.
+  database.run(`
+    CREATE TABLE library_roots (
+      library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (library_id, path)
+    )
+  `);
+
+  database.run('CREATE INDEX idx_library_roots_library ON library_roots(library_id)');
+
+  // Every existing library becomes a one-root library, which is what it
+  // already was.
+  database.run(`
+    INSERT OR IGNORE INTO library_roots (library_id, path, created_at)
+    SELECT id, path, created_at
+    FROM libraries
+    WHERE path IS NOT NULL AND TRIM(path) != ''
+  `);
+}
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -926,6 +957,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     version: 21,
     name: 'automatic_library_scanning',
     up: createAutomaticScanSchema
+  },
+  {
+    version: 22,
+    name: 'library_multiple_roots',
+    up: createLibraryRootsSchema
   }
 ];
 

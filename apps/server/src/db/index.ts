@@ -9,6 +9,13 @@ import {
   migrateLegacyWatchProgressToUsers,
   runDatabaseMigrations
 } from './migrations';
+import {
+  addLibraryRoot,
+  listLibraryRoots,
+  removeLibraryRoot,
+  setLibraryRoots,
+  type LibraryRootResult
+} from './library-roots';
 import { PUBLIC_USER_ID } from '../identity';
 
 // Ensure data directory exists
@@ -80,6 +87,11 @@ export const migrateWatchProgressToUsers = migrateLegacyWatchProgressToUsers;
 
 // ---------------- Helper Queries ---------------- //
 
+/** Attaches the root directories a library spans to a row from `libraries`. */
+function withLibraryRoots(row: Library & { item_count: number }): Library {
+  return { ...row, paths: listLibraryRoots(db, row.id) };
+}
+
 export const LibraryModel = {
   getAll: (options: { contentRatingScope?: ContentRatingScope } = {}): Library[] => {
     const params: any[] = [];
@@ -91,7 +103,7 @@ export const LibraryModel = {
       GROUP BY l.id
       ORDER BY l.name ASC
     `).all(...params) as (Library & { item_count: number })[];
-    return rows;
+    return rows.map(withLibraryRoots);
   },
 
   getById: (id: string): Library | null => {
@@ -102,10 +114,17 @@ export const LibraryModel = {
       WHERE l.id = ?
       GROUP BY l.id
     `).get(id) as (Library & { item_count: number }) | null;
-    return row;
+    return row ? withLibraryRoots(row) : null;
   },
 
-  create: (lib: Omit<Library, 'item_count'>) => {
+  /**
+   * Creates a library over one or more directories.
+   *
+   * `paths` is the full set of roots; `path` alone still works and means a
+   * library of one directory.
+   */
+  create: (lib: Omit<Library, 'item_count' | 'paths'> & { paths?: readonly string[] }) => {
+    const roots = lib.paths?.length ? [...lib.paths] : [lib.path];
     const stmt = db.prepare(`
       INSERT INTO libraries (id, name, path, type, last_scanned_at, created_at)
       VALUES ($id, $name, $path, $type, $last_scanned_at, $created_at)
@@ -113,13 +132,23 @@ export const LibraryModel = {
     stmt.run({
       $id: lib.id,
       $name: lib.name,
-      $path: lib.path,
+      $path: roots[0],
       $type: lib.type,
       $last_scanned_at: lib.last_scanned_at || null,
       $created_at: lib.created_at
     });
+    setLibraryRoots(db, lib.id, roots, lib.created_at);
     return LibraryModel.getById(lib.id);
   },
+
+  /** Adds a directory to an existing library. */
+  addPath: (id: string, rootPath: string): LibraryRootResult => addLibraryRoot(db, id, rootPath),
+
+  /**
+   * Removes a directory from a library, along with everything indexed under it.
+   * A library's last directory cannot be removed.
+   */
+  removePath: (id: string, rootPath: string): LibraryRootResult => removeLibraryRoot(db, id, rootPath),
 
   updateLastScanned: (id: string) => {
     db.run('UPDATE libraries SET last_scanned_at = ? WHERE id = ?', [new Date().toISOString(), id]);

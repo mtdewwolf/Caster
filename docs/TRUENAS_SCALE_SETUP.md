@@ -217,6 +217,14 @@ their container paths, for example
 `/media/movies`, `/media/tv`, or `/media/music`.
 Never enter the host path `/mnt/tank/media` in Caster.
 
+A library can span several folders, which is what to reach for when a
+collection outgrew its pool. Use **Add another folder** while creating the
+library, or **Add folder** on one that already exists, and mount every dataset
+involved — `/media/movies` and `/media/movies-archive`, say — into the
+container. Caster then presents them as one library instead of two, so a series
+split across two datasets stays together. Folders may not be nested inside one
+another, because both would index the same files.
+
 ## Intel and AMD GPU access
 
 Intel Quick Sync and AMD VAAPI use Linux DRM devices under `/dev/dri`. First

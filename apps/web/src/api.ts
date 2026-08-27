@@ -47,10 +47,28 @@ export const api = {
     return data.libraries || [];
   },
 
-  async createLibrary(payload: { name: string; path: string; type: string }): Promise<Library> {
+  async createLibrary(payload: { name: string; paths: string[]; type: string }): Promise<Library> {
     const data = await request<{ library: Library }>('/libraries', {
       method: 'POST',
       body: JSON.stringify(payload)
+    });
+    return data.library;
+  },
+
+  /** Adds another folder to an existing library and rescans it. */
+  async addLibraryPath(id: string, path: string): Promise<Library> {
+    const data = await request<{ library: Library }>(`/libraries/${id}/paths`, {
+      method: 'POST',
+      body: JSON.stringify({ path })
+    });
+    return data.library;
+  },
+
+  /** Removes a folder from a library, along with the media it contributed. */
+  async removeLibraryPath(id: string, path: string): Promise<Library> {
+    const data = await request<{ library: Library }>(`/libraries/${id}/paths`, {
+      method: 'DELETE',
+      body: JSON.stringify({ path })
     });
     return data.library;
   },

@@ -6,6 +6,11 @@ import crypto from 'crypto';
 import { db, ExternalSubtitleModel, LibraryModel, MediaModel, ProgressModel, SeriesModel } from '../db';
 import { isWatchedFilter, MEDIA_SORT_OPTIONS, WATCHED_FILTERS } from '../db';
 import { createMusicLibraryStore } from '../db/music-library';
+import {
+  containsPath,
+  samePath,
+  type LibraryRootResult
+} from '../db/library-roots';
 import { MediaMarkerStore } from '../db/media-marker-store';
 import { clientIsRemote } from '../security/client-network';
 import { requestClientNetworkInput } from '../security/request-security';
@@ -298,10 +303,9 @@ function detectLibraryType(mediaFiles: string[]): LibraryType {
 }
 
 function collectFolderSuggestions(): FolderSuggestion[] {
-  const existingLibraries = LibraryModel.getAll().map((library) => path.resolve(library.path));
-  const pathMatches = (left: string, right: string) => process.platform === 'win32'
-    ? left.toLowerCase() === right.toLowerCase()
-    : left === right;
+  // A folder counts as added if any library already covers it, not just if it
+  // is some library's first root.
+  const existingRoots = LibraryModel.getAll().flatMap((library) => library.paths);
 
   const queue = getSuggestionRoots().map((directoryPath) => ({ directoryPath, depth: 0 }));
   const visited = new Set<string>();
@@ -343,7 +347,7 @@ function collectFolderSuggestions(): FolderSuggestion[] {
       name: path.basename(directoryPath) || directoryPath,
       type: detectLibraryType(media.samples),
       mediaFileCount: media.count,
-      alreadyAdded: existingLibraries.some((libraryPath) => pathMatches(libraryPath, directoryPath))
+      alreadyAdded: existingRoots.some((root) => samePath(root, directoryPath))
     }))
     .sort((left, right) => right.mediaFileCount - left.mediaFileCount || left.name.localeCompare(right.name))
     .slice(0, SUGGEST_MAX_RESULTS);
@@ -426,6 +430,66 @@ apiRouter.get('/libraries', (c) => {
   return c.json({ libraries });
 });
 
+/**
+ * Turns the folders named in a request into library roots.
+ *
+ * Identical folders are collapsed — picking the same one twice is a slip, not a
+ * request. Nested ones are refused, because scanning a folder and its parent
+ * into the same library indexes every file underneath twice.
+ */
+function resolveRequestedRoots(candidates: readonly string[]): { paths: string[] } | { error: string } {
+  const resolved: string[] = [];
+  for (const candidate of candidates) {
+    const directory = normalizeExistingDirectory(candidate);
+    if (!directory) {
+      return { error: `Folder not found or not accessible: ${candidate}` };
+    }
+    if (resolved.some((current) => samePath(current, directory))) continue;
+
+    const overlapping = resolved.find(
+      (current) => containsPath(current, directory) || containsPath(directory, current)
+    );
+    if (overlapping) {
+      return { error: `${directory} sits inside ${overlapping}; add one or the other, not both` };
+    }
+    resolved.push(directory);
+  }
+  return { paths: resolved };
+}
+
+/** Reads a request's folder list, accepting either `path` or `paths`. */
+function requestedRootCandidates(body: Record<string, unknown>): string[] {
+  const single = typeof body.path === 'string' ? [body.path] : [];
+  const many = Array.isArray(body.paths)
+    ? body.paths.filter((value): value is string => typeof value === 'string')
+    : [];
+  return [...single, ...many].map((value) => value.trim()).filter(Boolean);
+}
+
+/** Reports a rejected root change in terms the operator can act on. */
+function libraryRootFailure(
+  result: Extract<LibraryRootResult, { ok: false }>
+): { error: string; status: 400 | 404 | 409 } {
+  switch (result.reason) {
+    case 'library-not-found':
+      return { error: 'Library not found', status: 404 };
+    case 'not-a-root':
+      return { error: 'That folder is not part of this library', status: 404 };
+    case 'duplicate':
+      return { error: 'That folder is already part of this library', status: 409 };
+    case 'overlaps':
+      return {
+        error: `That folder overlaps ${result.conflictingPath}; add one or the other, not both`,
+        status: 409
+      };
+    case 'last-root':
+      return {
+        error: 'A library must keep at least one folder. Delete the library instead.',
+        status: 409
+      };
+  }
+}
+
 apiRouter.post('/libraries', async (c) => {
   const body = await readJsonObject(c);
   if (!body) {
@@ -433,10 +497,10 @@ apiRouter.post('/libraries', async (c) => {
   }
 
   const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const requestedPath = typeof body.path === 'string' ? body.path.trim() : '';
   const requestedType = typeof body.type === 'string' ? body.type : '';
+  const candidates = requestedRootCandidates(body);
 
-  if (!name || !requestedPath || !requestedType) {
+  if (!name || candidates.length === 0 || !requestedType) {
     return c.json({ error: 'Missing name, path, or type' }, 400);
   }
   if (!LIBRARY_TYPES.has(requestedType as LibraryType)) {
@@ -444,9 +508,9 @@ apiRouter.post('/libraries', async (c) => {
   }
   const type = requestedType as LibraryType;
 
-  const dirPath = normalizeExistingDirectory(requestedPath);
-  if (!dirPath) {
-    return c.json({ error: 'Library path not found or not accessible' }, 400);
+  const roots = resolveRequestedRoots(candidates);
+  if ('error' in roots) {
+    return c.json({ error: roots.error }, 400);
   }
 
   const id = `lib_${crypto.randomBytes(4).toString('hex')}`;
@@ -455,7 +519,8 @@ apiRouter.post('/libraries', async (c) => {
   const lib = LibraryModel.create({
     id,
     name,
-    path: dirPath,
+    path: roots.paths[0],
+    paths: roots.paths,
     type,
     created_at: now
   });
@@ -464,6 +529,68 @@ apiRouter.post('/libraries', async (c) => {
   void scanLibrary(id).catch(console.error);
 
   return c.json({ library: lib });
+});
+
+// A library spans a set of folders. Adding one indexes it alongside everything
+// already there; removing one drops what it contributed and leaves the rest.
+apiRouter.post('/libraries/:id/paths', async (c) => {
+  const id = c.req.param('id');
+  if (!LibraryModel.getById(id)) {
+    return c.json({ error: 'Library not found' }, 404);
+  }
+
+  const body = await readJsonObject(c);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+
+  const candidates = requestedRootCandidates(body);
+  if (candidates.length === 0) {
+    return c.json({ error: 'Missing path' }, 400);
+  }
+
+  const resolved = resolveRequestedRoots(candidates);
+  if ('error' in resolved) {
+    return c.json({ error: resolved.error }, 400);
+  }
+
+  // Applied one at a time so a rejected folder cannot take the accepted ones
+  // down with it, and the reported reason names the folder it belongs to.
+  for (const rootPath of resolved.paths) {
+    const result = LibraryModel.addPath(id, rootPath);
+    if (!result.ok) {
+      const failure = libraryRootFailure(result);
+      return c.json({ error: failure.error, library: LibraryModel.getById(id) }, failure.status);
+    }
+  }
+
+  // The new folder holds media nothing has indexed yet.
+  void scanLibrary(id).catch((error) => console.error(`Library scan ${id} failed:`, error));
+
+  return c.json({ library: LibraryModel.getById(id) });
+});
+
+apiRouter.delete('/libraries/:id/paths', async (c) => {
+  const id = c.req.param('id');
+  if (!LibraryModel.getById(id)) {
+    return c.json({ error: 'Library not found' }, 404);
+  }
+
+  const body = await readJsonObject(c);
+  const requestedPath = body && typeof body.path === 'string'
+    ? body.path.trim()
+    : (c.req.query('path') ?? '').trim();
+  if (!requestedPath) {
+    return c.json({ error: 'Missing path' }, 400);
+  }
+
+  // Deliberately not checked against the filesystem: a folder that has been
+  // unmounted or deleted is exactly the one an operator needs to remove.
+  const result = LibraryModel.removePath(id, requestedPath);
+  if (!result.ok) {
+    const failure = libraryRootFailure(result);
+    return c.json({ error: failure.error, library: LibraryModel.getById(id) }, failure.status);
+  }
+
+  return c.json({ library: LibraryModel.getById(id) });
 });
 
 apiRouter.delete('/libraries/:id', (c) => {
@@ -845,14 +972,23 @@ apiRouter.delete('/media/:id/file', (c) => {
     return c.json({ error: 'Media not found' }, 404);
   }
 
-  let realLibraryPath: string;
+  const realLibraryPaths: string[] = [];
   let realMediaPath: string;
   try {
     const mediaEntry = fs.lstatSync(item.full_path);
     if (!mediaEntry.isFile() || mediaEntry.isSymbolicLink()) {
       return c.json({ error: 'Media source must be a regular file' }, 409);
     }
-    realLibraryPath = fs.realpathSync.native(library.path);
+    // A library can span several folders, and the file only has to live under
+    // one of them. A folder that will not resolve — an unmounted share, say —
+    // cannot be the one holding this file, so the others still decide.
+    for (const root of library.paths) {
+      try {
+        realLibraryPaths.push(fs.realpathSync.native(root));
+      } catch {
+        continue;
+      }
+    }
     realMediaPath = fs.realpathSync.native(item.full_path);
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error
@@ -863,8 +999,17 @@ apiRouter.delete('/media/:id/file', (c) => {
     }
     return c.json({ error: 'Media source could not be safely resolved' }, 409);
   }
-  const relativeTarget = path.relative(realLibraryPath, realMediaPath);
-  if (!relativeTarget || relativeTarget.startsWith(`..${path.sep}`) || relativeTarget === '..' || path.isAbsolute(relativeTarget)) {
+  if (realLibraryPaths.length === 0) {
+    return c.json({ error: 'Media source could not be safely resolved' }, 409);
+  }
+  const insideLibrary = realLibraryPaths.some((realLibraryPath) => {
+    const relativeTarget = path.relative(realLibraryPath, realMediaPath);
+    return !!relativeTarget
+      && !relativeTarget.startsWith(`..${path.sep}`)
+      && relativeTarget !== '..'
+      && !path.isAbsolute(relativeTarget);
+  });
+  if (!insideLibrary) {
     return c.json({ error: 'Media source is outside its library root' }, 409);
   }
 

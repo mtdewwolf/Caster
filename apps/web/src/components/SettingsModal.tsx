@@ -49,10 +49,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
   // New Library Form State
   const [newLibName, setNewLibName] = useState('');
   const [newLibPath, setNewLibPath] = useState('');
+  // Folders staged for the library being created. The text field holds the one
+  // being typed or browsed to; these are the ones already committed to it.
+  const [newLibPaths, setNewLibPaths] = useState<string[]>([]);
   const [newLibType, setNewLibType] = useState<'movies' | 'tv' | 'music' | 'home_videos'>('movies');
   const [isAdding, setIsAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
+  // Which library the folder browser is picking for: the one being created, or
+  // the id of an existing library gaining another folder.
+  const [browserTarget, setBrowserTarget] = useState<'new' | string | null>(null);
 
   const loadData = async () => {
     try {
@@ -78,26 +84,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
     return () => clearInterval(interval);
   }, []);
 
+  /** Every folder the new library would cover, including the unstaged one. */
+  const draftPaths = () => {
+    const typed = newLibPath.trim();
+    return typed && !newLibPaths.includes(typed) ? [...newLibPaths, typed] : newLibPaths;
+  };
+
+  const handleStagePath = () => {
+    const typed = newLibPath.trim();
+    if (!typed) return;
+    setPathError(null);
+    if (!newLibPaths.includes(typed)) setNewLibPaths([...newLibPaths, typed]);
+    setNewLibPath('');
+  };
+
+  const handleUnstagePath = (folder: string) => {
+    setNewLibPaths(newLibPaths.filter((current) => current !== folder));
+  };
+
   const handleAddLibrary = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newLibName.trim() || !newLibPath.trim()) return;
+    const paths = draftPaths();
+    if (!newLibName.trim() || paths.length === 0) return;
 
     setError(null);
     setIsAdding(true);
     try {
       await api.createLibrary({
         name: newLibName.trim(),
-        path: newLibPath.trim(),
+        paths,
         type: newLibType
       });
       setNewLibName('');
       setNewLibPath('');
+      setNewLibPaths([]);
       await loadData();
       onLibrariesChanged();
     } catch (err: any) {
       setError(err.message || 'Failed to add library');
     } finally {
       setIsAdding(false);
+    }
+  };
+
+  const handleAddLibraryPath = async (id: string, folder: string) => {
+    setPathError(null);
+    try {
+      await api.addLibraryPath(id, folder);
+      await loadData();
+      onLibrariesChanged();
+    } catch (err: any) {
+      setPathError(err.message || 'Failed to add folder');
+    }
+  };
+
+  const handleRemoveLibraryPath = async (id: string, folder: string) => {
+    if (!confirm(`Remove ${folder} from this library? Its media is dropped from the catalog, but the files on disk are untouched.`)) {
+      return;
+    }
+    setPathError(null);
+    try {
+      await api.removeLibraryPath(id, folder);
+      await loadData();
+      onLibrariesChanged();
+    } catch (err: any) {
+      setPathError(err.message || 'Failed to remove folder');
     }
   };
 
@@ -126,7 +177,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
   };
 
   const handleFolderSelect = (selectedPath: string) => {
-    setIsBrowserOpen(false);
+    const target = browserTarget;
+    setBrowserTarget(null);
+    if (target === null) return;
+
+    if (target !== 'new') {
+      void handleAddLibraryPath(target, selectedPath);
+      return;
+    }
+
     setNewLibPath(selectedPath);
     if (!newLibName.trim()) {
       const segments = selectedPath.split(/[\\/]/).filter(Boolean);
@@ -229,7 +288,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
               <form onSubmit={handleAddLibrary} className="p-4 bg-slate-950/60 border border-white/5 rounded-xl space-y-4">
                 <div className="font-semibold text-slate-200 flex items-center gap-2 text-xs uppercase tracking-wider">
                   <FolderPlus className="w-4 h-4 text-blue-400" />
-                  <span>Add TrueNAS Media Folder</span>
+                  <span>Add TrueNAS Media Library</span>
                 </div>
 
                 {error && <div className="text-xs text-rose-400">{error}</div>}
@@ -247,18 +306,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">Folder Path (TrueNAS)</label>
+                    <label htmlFor="new-library-path" className="block text-[11px] font-medium text-slate-400 mb-1">
+                      Folder Paths (TrueNAS)
+                    </label>
                     <div className="flex items-center gap-2">
                       <input
+                        id="new-library-path"
                         type="text"
                         placeholder="e.g. /media/movies or D:\Media"
                         value={newLibPath}
                         onChange={(e) => setNewLibPath(e.target.value)}
+                        onKeyDown={(e) => {
+                          // Enter adds another folder rather than submitting a
+                          // library that is still being described.
+                          if (e.key !== 'Enter' || !newLibPath.trim()) return;
+                          e.preventDefault();
+                          handleStagePath();
+                        }}
                         className="flex-1 min-w-0 bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-blue-500"
                       />
                       <button
                         type="button"
-                        onClick={() => setIsBrowserOpen(true)}
+                        onClick={() => setBrowserTarget('new')}
                         className="px-2.5 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-blue-500/50 text-slate-300 hover:text-blue-300 rounded-lg transition-colors flex items-center gap-1.5 text-xs shrink-0"
                         title="Browse server folders & auto-detect media"
                       >
@@ -266,6 +335,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                         <span>Browse</span>
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleStagePath}
+                      disabled={!newLibPath.trim()}
+                      className="mt-1.5 text-[11px] text-blue-400 hover:text-blue-300 disabled:text-slate-600 disabled:cursor-not-allowed flex items-center gap-1"
+                    >
+                      <FolderPlus className="w-3 h-3" />
+                      <span>Add another folder</span>
+                    </button>
                   </div>
 
                   <div>
@@ -282,6 +360,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                     </select>
                   </div>
                 </div>
+
+                {newLibPaths.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] text-slate-400">
+                      Folders in this library ({newLibPaths.length + (newLibPath.trim() ? 1 : 0)}):
+                    </div>
+                    {newLibPaths.map((folder) => (
+                      <div
+                        key={folder}
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-900 border border-white/10 rounded-lg"
+                      >
+                        <span className="font-mono text-[11px] text-slate-300 truncate">{folder}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleUnstagePath(folder)}
+                          aria-label={`Remove ${folder} from the new library`}
+                          className="p-1 text-slate-500 hover:text-rose-400 rounded shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="flex justify-end">
                   <button
@@ -312,31 +414,66 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                   )}
                 </div>
 
+                {pathError && <div className="text-xs text-rose-400">{pathError}</div>}
+
                 {libraries.length === 0 ? (
                   <div className="text-center py-8 text-slate-500 text-xs bg-slate-950/30 rounded-xl border border-dashed border-white/10">
                     No libraries configured yet. Add your first media folder above!
                   </div>
                 ) : (
-                  libraries.map((lib) => (
+                  libraries.map((lib) => {
+                    const folders = lib.paths?.length ? lib.paths : [lib.path];
+                    return (
                     <div
                       key={lib.id}
-                      className="p-3 bg-slate-950/40 border border-white/5 rounded-xl flex items-center justify-between"
+                      className="p-3 bg-slate-950/40 border border-white/5 rounded-xl flex items-start justify-between gap-3"
                     >
-                      <div>
+                      <div className="min-w-0">
                         <div className="font-semibold text-slate-200 flex items-center gap-2">
                           <span>{lib.name}</span>
                           <span className="text-[10px] px-1.5 py-0.5 bg-blue-900/50 text-blue-300 border border-blue-500/20 rounded capitalize">
                             {lib.type}
                           </span>
                         </div>
-                        <div className="font-mono text-xs text-slate-400 truncate max-w-md">{lib.path}</div>
+
+                        <div className="mt-1 space-y-1">
+                          {folders.map((folder) => (
+                            <div key={folder} className="flex items-center gap-1.5 group">
+                              <span className="font-mono text-xs text-slate-400 truncate max-w-md">{folder}</span>
+                              {/* The last folder cannot go: a library with none
+                                  of them can never be scanned again. */}
+                              {folders.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveLibraryPath(lib.id, folder)}
+                                  aria-label={`Remove ${folder} from ${lib.name}`}
+                                  title="Remove this folder from the library"
+                                  className="p-0.5 text-slate-600 hover:text-rose-400 rounded shrink-0"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setBrowserTarget(lib.id)}
+                          className="mt-1.5 text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                        >
+                          <FolderPlus className="w-3 h-3" />
+                          <span>Add folder</span>
+                        </button>
+
                         <div className="text-[11px] text-slate-500 mt-1">
-                          {lib.item_count} items &bull; Last scanned:{' '}
+                          {lib.item_count} items &bull; {folders.length}{' '}
+                          {folders.length === 1 ? 'folder' : 'folders'} &bull; Last scanned:{' '}
                           {lib.last_scanned_at ? new Date(lib.last_scanned_at).toLocaleTimeString() : 'Never'}
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
                         <button
                           onClick={() => handleScanLibrary(lib.id)}
                           className="p-2 text-slate-400 hover:text-blue-400 hover:bg-white/5 rounded-lg transition-colors"
@@ -353,7 +490,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
                         </button>
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -482,11 +620,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, onLibrari
           )}
         </div>
 
-        {isBrowserOpen && (
+        {browserTarget !== null && (
           <FolderBrowserModal
-            initialPath={newLibPath.trim() || undefined}
+            initialPath={browserTarget === 'new' ? (newLibPath.trim() || undefined) : undefined}
             onSelect={handleFolderSelect}
-            onClose={() => setIsBrowserOpen(false)}
+            onClose={() => setBrowserTarget(null)}
           />
         )}
       </div>
