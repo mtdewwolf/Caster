@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Caster — Project Progress Report · Aug 27 2026</title>
+<style>
+  :root{
+    --bg:#0b1120; --panel:#111a2e; --panel2:#0e1628; --line:#1f2c48;
+    --text:#e2e8f0; --muted:#8fa3c0; --dim:#5b6d8a;
+    --green:#22c55e; --lime:#84cc16; --yellow:#eab308; --orange:#f97316;
+    --red:#ef4444; --blue:#3b82f6; --purple:#a78bfa; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;line-height:1.55;padding:32px 20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header.hero{background:linear-gradient(135deg,#132036 0%,#0d1730 60%,#10263c 100%);border:1px solid var(--line);border-radius:16px;padding:32px;margin-bottom:24px}
+  .hero h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
+  .hero h1 span{color:var(--cyan)}
+  .hero p.sub{color:var(--muted);margin-top:6px;max-width:760px}
+  .meta-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+  .chip{font-size:12px;padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--muted)}
+  .chip b{color:var(--text);font-weight:600}
+  h2.section{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--cyan);margin:34px 0 14px;display:flex;align-items:center;gap:10px}
+  h2.section::after{content:"";flex:1;height:1px;background:var(--line)}
+  .grid{display:grid;gap:16px}
+  .cols-4{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .cols-2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .stat-card{text-align:center}
+  .stat-card .val{font-size:30px;font-weight:800}
+  .stat-card .lbl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+  .ok{color:var(--green)} .warn{color:var(--yellow)} .bad{color:var(--red)} .info-c{color:var(--blue)}
+  /* donut */
+  .donut-flex{display:flex;gap:28px;align-items:center;flex-wrap:wrap}
+  .donut{position:relative;width:190px;height:190px;flex:none}
+  .donut svg{transform:rotate(-90deg)}
+  .donut .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .donut .center b{font-size:38px;font-weight:800}
+  .donut .center span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .legend{display:flex;flex-direction:column;gap:8px;font-size:13.5px}
+  .legend div{display:flex;align-items:center;gap:10px;color:var(--muted)}
+  .dot{width:10px;height:10px;border-radius:3px;flex:none}
+  /* bars */
+  table.bars{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.bars th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.bars td{padding:9px 10px;border-bottom:1px solid rgba(31,44,72,.55);vertical-align:middle}
+  table.bars tr:last-child td{border-bottom:none}
+  .bar-track{background:#1a2540;border-radius:999px;height:9px;width:100%;min-width:130px;overflow:hidden}
+  .bar-fill{height:100%;border-radius:999px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 10px;border-radius:999px;white-space:nowrap}
+  .t-done{background:rgba(34,197,94,.14);color:var(--green);border:1px solid rgba(34,197,94,.35)}
+  .t-good{background:rgba(59,130,246,.14);color:#93b8ff;border:1px solid rgba(59,130,246,.35)}
+  .t-part{background:rgba(234,179,8,.14);color:var(--yellow);border:1px solid rgba(234,179,8,.35)}
+  .t-stub{background:rgba(239,68,68,.14);color:#ff8f8f;border:1px solid rgba(239,68,68,.35)}
+  .t-na{background:rgba(91,109,138,.18);color:var(--muted);border:1px solid var(--line)}
+  .check-list{list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14px}
+  .check-list li{display:flex;gap:12px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .badge{font-weight:800;font-size:11px;border-radius:6px;padding:3px 9px;letter-spacing:.04em;flex:none;margin-top:1px}
+  .b-pass{background:rgba(34,197,94,.15);color:var(--green)}
+  .b-warn{background:rgba(234,179,8,.15);color:var(--yellow)}
+  .b-fail{background:rgba(239,68,68,.15);color:var(--red)}
+  ul.clean{list-style:none;display:flex;flex-direction:column;gap:8px}
+  ul.clean li{padding-left:20px;position:relative;font-size:13.5px;color:var(--muted)}
+  ul.clean li::before{content:"›";position:absolute;left:4px;color:var(--cyan);font-weight:700}
+  ul.clean li b{color:var(--text);font-weight:600}
+  code{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px;background:#16203a;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#bcd3f5}
+  footer{margin-top:36px;text-align:center;font-size:12px;color:var(--dim)}
+  .num{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Caster <span>·</span> Project Progress Report</h1>
+  <p class="sub">Personal media server for TrueNAS SCALE &amp; Tailscale — Bun + Hono + SQLite backend (apps/server), React + Vite frontend (apps/web). Self-hosted Plex replacement with hardware-accelerated transcoding.</p>
+  <div class="meta-row">
+    <span class="chip">Date <b>2026-08-27</b></span>
+    <span class="chip">Commit <b>7ab9bbd</b></span>
+    <span class="chip">Branch <b>Master</b> (clean, synced)</span>
+    <span class="chip">Scope <b>~15.4k LOC server · 65 files + web app</b></span>
+    <span class="chip">Review <b>Full static review + live verification runs</b></span>
+  </div>
+</header>
+
+<!-- HEALTH GATES -->
+<h2 class="section">Verification Gates (run during this review)</h2>
+<div class="card">
+  <ul class="check-list">
+    <li><span class="badge b-pass">PASS</span><div><b>Typecheck</b> — <code>bun run typecheck</code> clean across both workspaces (<code>@caster/server</code>, <code>@caster/web</code>).</div></li>
+    <li><span class="badge b-pass">PASS</span><div><b>Unit / integration tests</b> — <b class="num">515 pass / 0 fail</b> across 55 files, 1,458 assertions in 33.8s. Zero TODO/FIXME markers anywhere in the repo.</div></li>
+    <li><span class="badge b-pass">PASS</span><div><b>Production build</b> — Vite build succeeds (1,605 modules). Note: single 933&nbsp;kB JS chunk exceeds the 500&nbsp;kB budget warning.</div></li>
+    <li><span class="badge b-fail">FAIL</span><div><b>Browser E2E suite</b> — cannot even load config: <code>playwright.config.ts:4</code> imports non-existent export <code>E2E_ADMIN_PASSWORD</code>. The entire E2E gate (and CI job&nbsp;2) is red at HEAD. Leftover from the account-free refactor. <i>(Bug&nbsp;B-01)</i></div></li>
+    <li><span class="badge b-warn">N/A</span><div><b>Lint</b> — no lint script configured in the repo (only typecheck). Consider adding Biome/ESLint as a future gate.</div></li>
+  </ul>
+</div>
+
+<!-- OVERALL PROGRESS -->
+<h2 class="section">Overall Completion</h2>
+<div class="card">
+  <div class="donut-flex">
+    <div class="donut">
+      <svg width="190" height="190" viewBox="0 0 190 190">
+        <circle cx="95" cy="95" r="80" fill="none" stroke="#1a2540" stroke-width="17"/>
+        <!-- ~86% overall -->
+        <circle cx="95" cy="95" r="80" fill="none" stroke="#22c55e" stroke-width="17"
+                stroke-linecap="round" stroke-dasharray="432.4 502.6"/>
+      </svg>
+      <div class="center"><b class="ok num">86%</b><span>Feature-complete<br>v1 scope</span></div>
+    </div>
+    <div class="legend">
+      <div><span class="dot" style="background:var(--green)"></span> Complete &amp; hardened — core playback pipeline, deployment, docs</div>
+      <div><span class="dot" style="background:var(--blue)"></span> Good (~85–90%) — minor polish or dead-code cleanup pending</div>
+      <div><span class="dot" style="background:var(--yellow)"></span> Partial — real gaps (markers detection depth, scan-status races)</div>
+      <div><span class="dot" style="background:var(--red)"></span> Stubbed / superseded by design decision (remote control plane)</div>
+      <div><span class="dot" style="background:var(--dim)"></span> Removed intentionally — auth/accounts (account-free mode)</div>
+    </div>
+  </div>
+</div>
+
+<!-- FEATURE MATRIX -->
+<h2 class="section">Feature Progress Matrix</h2>
+<div class="card" style="overflow-x:auto">
+<table class="bars">
+  <tr><th style="min-width:230px">Subsystem</th><th style="width:160px">Progress</th><th style="width:52px"></th><th>Status</th><th>Evidence / gap</th></tr>
+  <tr><td><b>Transcoding engine</b> (QSV/NVENC/VAAPI probes, HLS sessions, HDR tonemap, burn-in subs, cache budgeting)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:95%;background:var(--green)"></div></div></td><td class="num ok">95%</td>
+      <td><span class="tag t-done">Stable</span></td><td>Sophisticated impl incl. mid-session CPU fallback; direct-play reason codes</td></tr>
+  <tr><td><b>Library scanner &amp; identity</b> (locks+heartbeat, move/rename fingerprints, reconcile, FTS, external subs, thumbnails)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:92%;background:var(--green)"></div></div></td><td class="num ok">92%</td>
+      <td><span class="tag t-done">Stable</span></td><td>Gap: global <code>scanStatus</code> clobbers under concurrent per-library scans</td></tr>
+  <tr><td><b>Core server / API / DB</b> (21 migrations, WAL, FTS5, backup CLI)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:98%;background:var(--green)"></div></div></td><td class="num ok">98%</td>
+      <td><span class="tag t-done">Stable</span></td><td>60+ endpoints; residual vestigial scope params (~33 call sites)</td></tr>
+  <tr><td><b>Web player</b> (direct/HLS via hls.js, quality/audio/sub pickers, keyboard, cast/AirPlay, intro-skip)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:90%;background:var(--green)"></div></div></td><td class="num ok">90%</td>
+      <td><span class="tag t-good">Good</span></td><td>A11y gaps on icon-only controls; CDN stylesheet dependency</td></tr>
+  <tr><td><b>Metadata (TMDB)</b> (+artwork cache, enrichment queue, Fix Match)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:90%;background:var(--green)"></div></div></td><td class="num ok">90%</td>
+      <td><span class="tag t-good">Good</span></td><td>Graceful when token unset; ambiguous matches never auto-applied</td></tr>
+  <tr><td><b>Watch Together</b> (rooms, invite tokens, WS hub, drift correction)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:88%;background:var(--green)"></div></div></td><td class="num ok">88%</td>
+      <td><span class="tag t-good">Good</span></td><td>In-memory by design (rooms lost on restart, documented)</td></tr>
+  <tr><td><b>Music</b> (library read-model, queue reducer, playlists w/ optimistic revisions)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:85%;background:var(--blue)"></div></div></td><td class="num info-c">85%</td>
+      <td><span class="tag t-good">Good</span></td><td><code>getMusicArtists</code> endpoint shipped but unused in UI</td></tr>
+  <tr><td><b>Markers (intro/credits)</b></td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:70%;background:var(--yellow)"></div></div></td><td class="num warn">70%</td>
+      <td><span class="tag t-part">Partial</span></td><td>Only chapter-based detector registered; no audio/black-frame analysis yet</td></tr>
+  <tr><td><b>E2E test coverage</b></td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:45%;background:var(--yellow)"></div></div></td><td class="num warn">45%</td>
+      <td><span class="tag t-part">Blocked</span></td><td>Only 3 scenarios authored; suite currently can't start (<i>B-01</i>)</td></tr>
+  <tr><td><b>Remote access / pairing</b> (identity keys, signed heartbeats, endpoint negotiation)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:30%;background:var(--red)"></div></div></td><td class="num bad">30%</td>
+      <td><span class="tag t-stub">Superseded</span></td><td>Control plane dropped → Tailscale-first (<code>REMOTE_ACCESS_DECISION.md</code>); enroll/revoke/lookup are <code>NOT_IMPLEMENTED</code>; pairing schema dead</td></tr>
+  <tr><td><b>Accounts / auth</b></td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:100%;background:#5b6d8a"></div></div></td><td class="num">—</td>
+      <td><span class="tag t-na">Removed</span></td><td>Intentionally account-free; every API route public (documented risk posture)</td></tr>
+  <tr><td><b>Deployment &amp; ops</b> (Docker multi-stage GPU image, Compose ×3, TrueNAS/Tailscale/backup docs, CI)</td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:95%;background:var(--green)"></div></div></td><td class="num ok">95%</td>
+      <td><span class="tag t-done">Stable</span></td><td>Images not published to a registry yet (manual build only)</td></tr>
+  <tr><td><b>Android client</b></td>
+      <td><div class="bar-track"><div class="bar-fill" style="width:100%;background:#5b6d8a"></div></div></td><td class="num">—</td>
+      <td><span class="tag t-na">Externalized</span></td><td>Moved to standalone Caster-Android repository</td></tr>
+</table>
+</div>
+
+<!-- CODE HEALTH -->
+<h2 class="section">Code Health Snapshot</h2>
+<div class="grid cols-4">
+  <div class="card stat-card"><div class="val info-c num">65</div><div class="lbl">Server files</div></div>
+  <div class="card stat-card"><div class="val info-c num">~15,400</div><div class="lbl">Server LOC</div></div>
+  <div class="card stat-card"><div class="val ok num">21</div><div class="lbl">DB migrations applied</div></div>
+  <div class="card stat-card"><div class="val ok num">0</div><div class="lbl">TODO / FIXME markers</div></div>
+  <div class="card stat-card"><div class="val ok num">515</div><div class="lbl">Unit tests passing</div></div>
+  <div class="card stat-card"><div class="val bad num">0 / 3</div><div class="lbl">E2E runnable at HEAD</div></div>
+  <div class="card stat-card"><div class="val warn num">934 kB</div><div class="lbl">Web bundle (single chunk)</div></div>
+  <div class="card stat-card"><div class="val warn num">1,624</div><div class="lbl">Lines in routes/api.ts monolith</div></div>
+</div>
+
+<!-- MOMENTUM -->
+<h2 class="section">Recent Momentum (last 20 commits)</h2>
+<div class="card">
+<ul class="clean">
+  <li><b>Account-free transition completed</b> — setup wizard, passwords, sessions and API tokens removed end-to-end; identity is the shared <code>'public'</code> household user.</li>
+  <li><b>Media identity system landed</b> — content fingerprints keep stable IDs across moves/renames; logical titles/shows/version layer added (migration v20).</li>
+  <li><b>Scan robustness</b> — per-library DB locks with heartbeat + stale reclaim, generation-based safe reconcile, filesystem watchers (auto-scan).</li>
+  <li><b>Video casting shipped</b> — browser-native Cast / Remote Playback / AirPlay picker integration with receiver-facing media URLs.</li>
+  <li><b>Android split</b> — native client extracted to its own repository to decouple release cycles.</li>
+</ul>
+</div>
+
+<!-- NEXT -->
+<h2 class="section">Top Next Steps</h2>
+<div class="grid cols-2">
+  <div class="card">
+    <ul class="clean">
+      <li><b>Unblock E2E now</b> — drop the stale <code>E2E_ADMIN_PASSWORD</code> import from <code>playwright.config.ts</code>; restore CI job 2.</li>
+      <li><b>Compile Tailwind</b> — replace Play CDN + Google Fonts with a build step; the app must render offline on a LAN NAS.</li>
+      <li><b>Fix scan status race</b> — key global status per library or move it into the lock layer.</li>
+      <li><b>Split routes/api.ts</b> — 1.6k-line monolith into resource routers; delete vestigial scope plumbing from the account-free refactor.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <ul class="clean">
+      <li><b>Add second marker detector</b> (audio fingerprint / black-frame) to raise intro-detection coverage beyond chapter metadata.</li>
+      <li><b>Auth roadmap</b> — account-free was chosen deliberately, but internet-exposed deployments have zero protection; decide remote-user story before mobile rollout.</li>
+      <li><b>Publish container images</b> — CI builds/smoke-tests but doesn't push; add GHCR publish behind release tags.</li>
+      <li><b>Add lint gate</b> and code-split the web bundle below 500 kB.</li>
+    </ul>
+  </div>
+</div>
+
+<footer>Caster full-project review · generated 2026-08-27 from commit 7ab9bbd · see bug-report sibling file for the 13 tracked issues</footer>
+</div>
+</body>
+</html>

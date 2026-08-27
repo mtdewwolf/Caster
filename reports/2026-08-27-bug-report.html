@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Caster — Bug Report · Aug 27 2026</title>
+<style>
+  :root{
+    --bg:#0b1120; --panel:#111a2e; --panel2:#0e1628; --line:#1f2c48;
+    --text:#e2e8f0; --muted:#8fa3c0; --dim:#5b6d8a;
+    --green:#22c55e; --yellow:#eab308; --orange:#f97316;
+    --red:#ef4444; --blue:#3b82f6; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;line-height:1.55;padding:32px 20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header.hero{background:linear-gradient(135deg,#26101a 0%,#160d1c 55%,#0d1730 100%);border:1px solid var(--line);border-radius:16px;padding:30px;margin-bottom:24px}
+  .hero h1{font-size:27px;font-weight:800;letter-spacing:-.02em}
+  .hero h1 span{color:var(--red)}
+  .hero p.sub{color:var(--muted);margin-top:6px;max-width:780px}
+  .meta-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+  .chip{font-size:12px;padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--muted)}
+  .chip b{color:var(--text);font-weight:600}
+  h2.section{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--cyan);margin:34px 0 14px;display:flex;align-items:center;gap:10px}
+  h2.section::after{content:"";flex:1;height:1px;background:var(--line)}
+  /* summary cards */
+  .sum-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:8px}
+  .sum-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;text-align:center;border-top:3px solid var(--dim)}
+  .sum-card .n{font-size:32px;font-weight:800;font-variant-numeric:tabular-nums}
+  .sum-card .l{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+  .s-crit{border-top-color:#a21caf}.s-crit .n{color:#e879f9}
+  .s-high{border-top-color:var(--red)}.s-high .n{color:var(--red)}
+  .s-med{border-top-color:var(--orange)}.s-med .n{color:var(--orange)}
+  .s-low{border-top-color:var(--yellow)}.s-low .n{color:var(--yellow)}
+  .s-info{border-top-color:var(--blue)}.s-info .n{color:var(--blue)}
+  /* filters */
+  .filters{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 14px}
+  .filters button{background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:6px 16px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit}
+  .filters button:hover{color:var(--text)}
+  .filters button.active{background:var(--cyan);border-color:var(--cyan);color:#06202b}
+  /* bug cards */
+  .bug{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--dim);border-radius:12px;padding:18px 20px;margin-bottom:14px}
+  .bug.high{border-left-color:var(--red)} .bug.medium{border-left-color:var(--orange)}
+  .bug.low{border-left-color:var(--yellow)} .bug.info{border-left-color:var(--blue)}
+  .bug-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px}
+  .sev{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;padding:3px 10px;border-radius:999px;flex:none}
+  .sev.high{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.4)}
+  .sev.medium{background:rgba(249,115,22,.14);color:var(--orange);border:1px solid rgba(249,115,22,.4)}
+  .sev.low{background:rgba(234,179,8,.13);color:var(--yellow);border:1px solid rgba(234,179,8,.38)}
+  .sev.info{background:rgba(59,130,246,.14);color:#7fa9ff;border:1px solid rgba(59,130,246,.38)}
+  .bug-id{font-family:Consolas,monospace;font-size:12px;color:var(--dim);font-weight:700}
+  .bug-title{font-size:15.5px;font-weight:700;flex:1;min-width:240px}
+  .loc{font-family:Consolas,"Cascadia Mono",monospace;font-size:11.5px;color:#7ee0f5;background:rgba(34,211,238,.08);border:1px solid rgba(34,211,238,.25);padding:2px 8px;border-radius:6px}
+  .bug p.desc{font-size:13.5px;color:var(--muted);margin:6px 0}
+  .kv{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:10px;font-size:12.5px}
+  .kv div span.k{color:var(--dim);text-transform:uppercase;font-size:10.5px;letter-spacing:.07em;display:block}
+  .kv div span.v{color:var(--text)}
+  code{font-family:Consolas,"Cascadia Mono",monospace;font-size:11.5px;background:#16203a;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#bcd3f5}
+  .verified-tag{font-size:10.5px;font-weight:800;color:var(--green);border:1px solid rgba(34,197,94,.4);background:rgba(34,197,94,.1);padding:2px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em}
+  footer{margin-top:36px;text-align:center;font-size:12px;color:var(--dim)}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Caster <span>·</span> Bug Report</h1>
+  <p class="sub">Findings from the full-project review of commit <b style="color:var(--text)">7ab9bbd</b>. Every issue below was located in source during this review; items marked <i>verified</i> were confirmed by live execution (test run, build, or error reproduction).</p>
+  <div class="meta-row">
+    <span class="chip">Date <b>2026-08-27</b></span>
+    <span class="chip">Verified live <b>B-01, B-04 (tests/build runs)</b></span>
+    <span class="chip">Security-by-design flags <b>B-02</b></span>
+  </div>
+</header>
+
+<!-- SUMMARY -->
+<h2 class="section">Issue Summary</h2>
+<div class="sum-grid">
+  <div class="sum-card s-crit"><div class="n" id="count-critical">0</div><div class="l">Critical</div></div>
+  <div class="sum-card s-high"><div class="n" id="count-high">2</div><div class="l">High</div></div>
+  <div class="sum-card s-med"><div class="n" id="count-medium">3</div><div class="l">Medium</div></div>
+  <div class="sum-card s-low"><div class="n" id="count-low">4</div><div class="l">Low</div></div>
+  <div class="sum-card s-info"><div class="n" id="count-info">4</div><div class="l">Info / Hardening</div></div>
+</div>
+
+<!-- FILTERS -->
+<div class="filters">
+  <button data-f="all" class="active">All (13)</button>
+  <button data-f="high">High (2)</button>
+  <button data-f="medium">Medium (3)</button>
+  <button data-f="low">Low (4)</button>
+  <button data-f="info">Info (4)</button>
+</div>
+
+<div id="buglist">
+
+<!-- B-01 -->
+<article class="bug high" data-sev="high">
+  <div class="bug-head">
+    <span class="bug-id">B-01</span><span class="sev high">High</span>
+    <span class="bug-title">E2E suite cannot start — import of non-existent export crashes Playwright config load</span>
+    <span class="verified-tag">✓ Verified live</span>
+  </div>
+  <p class="desc">After the account-free refactor removed credentials, <code>playwright.config.ts</code> still imports <code>E2E_ADMIN_PASSWORD</code> from <code>tests/e2e/constants.ts</code>, which no longer exports it. Loading the config throws
+  <code>SyntaxError: The requested module './tests/e2e/constants' does not provide an export named 'E2E_ADMIN_PASSWORD'</code> (reproduced via <code>bunx playwright test --list</code>). The stale <code>ADMIN_PASSWORD</code> env passed to webServer is also dead.</p>
+  <p class="desc"><b>Impact:</b> the entire browser E2E gate is red at HEAD — CI job “e2e – Browser E2E” fails or is being ignored, and release gates in <code>docs/RELEASE_GATES.md</code> are bypassed.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">playwright.config.ts:4,47</span></div>
+    <div><span class="k">Fix</span><span class="v">Remove the import and the <code>ADMIN_PASSWORD</code> env line from config</span></div>
+  </div>
+</article>
+
+<!-- B-02 -->
+<article class="bug high" data-sev="high">
+  <div class="bug-head">
+    <span class="bug-id">B-02</span><span class="sev high">High</span>
+    <span class="bug-title">Zero authentication on all API routes, including filesystem browsing and destructive operations (design flag)</span>
+  </div>
+  <p class="desc">Account-free mode hardcodes every request to user <code>'public'</code>. Consequences beyond media playback: <code>GET /api/fs/browse</code> lists any absolute directory on the host; <code>DELETE /api/media/:id/file</code> needs only a guessable header (<code>X-Caster-Confirm-Delete</code> = media id); <code>/api/system/cache/clear</code>, <code>/api/system/transcodes/kill</code>, scan control are all open. Startup does print a security notice and docs warn to keep the server private — but DNS-rebinding or a misconfigured port-forward exposes full filesystem enumeration and file deletion.</p>
+  <p class="desc"><b>Impact:</b> deployment-hazard posture rather than a code defect; blocked on a decided remote-user/auth roadmap before mobile clients ship.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/routes/api.ts (fs/delete/system routes) · src/identity.ts</span></div>
+    <div><span class="k">Mitigation</span><span class="v">Tailscale-only exposure today; consider LAN-origin pinning or an opt-in shared-secret for destructive routes</span></div>
+  </div>
+</article>
+
+<!-- B-03 -->
+<article class="bug medium" data-sev="medium">
+  <div class="bug-head">
+    <span class="bug-id">B-03</span><span class="sev medium">Medium</span>
+    <span class="bug-title">Global <code>scanStatus</code> races across concurrent per-library scans</span>
+  </div>
+  <p class="desc">The lock layer deliberately supports parallel scans of different libraries, but progress state lives in one module-global object (<code>scanStatus</code>) overwritten by every <code>scanLibrary()</code>: concurrent runs clobber each other’s counters/current file, and the first finisher flips <code>isScanning=false</code> while another scan still runs. The route-level <code>isScanning → 409</code> guard also rejects legitimate concurrent per-library requests that the lock layer would allow.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/scanner/indexer.ts:45-52</span></div>
+    <div><span class="k">Fix</span><span class="v">Key status by library id (map), or aggregate it inside the lock store</span></div>
+  </div>
+</article>
+
+<!-- B-04 -->
+<article class="bug medium" data-sev="medium">
+  <div class="bug-head">
+    <span class="bug-id">B-04</span><span class="sev medium">Medium</span>
+    <span class="bug-title">Production styling depends on Tailwind Play CDN + Google Fonts — breaks offline/LAN use</span>
+    <span class="verified-tag">✓ Verified in build output</span>
+  </div>
+  <p class="desc"><code>index.html:11</code> loads <code>https://cdn.tailwindcss.com</code> (the dev-only JIT script, which logs a console warning and causes FOUC) plus Google Fonts. The built <code>dist/assets/index-*.css</code> is only 0.30 kB — proving no stylesheet is actually compiled. On the project’s target environment (NAS on a trusted LAN, possibly offline or Tailscale-only without general internet), the entire UI renders unstyled until/if the CDN answers.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/web/index.html:8-23</span></div>
+    <div><span class="k">Fix</span><span class="v">Add a Tailwind build step (or vendored static CSS) + self-hosted fonts in the Vite pipeline</span></div>
+  </div>
+</article>
+
+<!-- B-05 -->
+<article class="bug medium" data-sev="medium">
+  <div class="bug-head">
+    <span class="bug-id">B-05</span><span class="sev medium">Medium</span>
+    <span class="bug-title">Accessibility: core navigation cards are click-only divs; icon-only controls lack accessible names</span>
+  </div>
+  <p class="desc">Primary browsing targets — <code>MediaCard</code>/<code>SeriesCard</code> posters, episode rows, watch-history titles — are clickable <code>&lt;div&gt;/&lt;h3 onClick&gt;</code> elements with no role, tabindex, or keyboard handler: unreachable by keyboard and invisible to screen readers, some with nested interactive play buttons. In <code>VideoPlayer</code>, most icon-only controls use <code>title=</code> only (no <code>aria-label</code>), popovers are plain divs without <code>aria-expanded</code>, and music tabs implement <code>tablist</code> without arrow-key roving focus. Focus-trap usage in modals is a strong point to preserve.</p>
+  <div class="kv">
+    <div><span class="k">Locations</span><span class="v loc">apps/web/src/components/MediaCard.tsx:27 · SeriesCard.tsx:25 · SeriesDetailPage.tsx:210 · ProgressPage.tsx:301 · VideoPlayer.tsx (controls) · MusicLibraryPage.tsx:150</span></div>
+    <div><span class="k">Fix</span><span class="v">Convert card containers to real buttons/links with keyboard handlers; add aria-labels</span></div>
+  </div>
+</article>
+
+<!-- B-06 -->
+<article class="bug low" data-sev="low">
+  <div class="bug-head">
+    <span class="bug-id">B-06</span><span class="sev low">Low</span>
+    <span class="bug-title">Non-transactional progress upsert can strand <code>title_id</code> NULL</span>
+  </div>
+  <p class="desc"><code>ProgressModel.upsert</code> performs the INSERT…ON CONFLICT and the separate <code>UPDATE … SET title_id=…</code> as two statements outside a transaction. A crash between them leaves resume-point rows without logical-title linkage until the next write, silently degrading title-level “continue watching”.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/db/index.ts:892-928</span></div>
+    <div><span class="k">Fix</span><span class="v">Wrap both statements in one transaction (project already uses them elsewhere)</span></div>
+  </div>
+</article>
+
+<!-- B-07 -->
+<article class="bug low" data-sev="low">
+  <div class="bug-head">
+    <span class="bug-id">B-07</span><span class="sev low">Low</span>
+    <span class="bug-title">Search terms not escaped for LIKE wildcards (%/_)</span>
+  </div>
+  <p class="desc">User search text flows into <code>LIKE '%…%'</code> without escaping, so typing <code>%</code> or <code>_</code> changes match semantics (e.g., <code>%</code> matches everything). Harmless security-wise — parameters stay bound — but produces confusing/noisy results across media, series, and music search.</p>
+  <div class="kv">
+    <div><span class="k">Locations</span><span class="v loc">apps/server/src/db/index.ts:262 · db/music-library.ts (series search similar)</span></div>
+    <div><span class="k">Fix</span><span class="v">Escape %,_ ,\ and add ESCAPE clause</span></div>
+  </div>
+</article>
+
+<!-- B-08 -->
+<article class="bug low" data-sev="low">
+  <div class="bug-head">
+    <span class="bug-id">B-08</span><span class="sev low">Low</span>
+    <span class="bug-title">Vestigial auth/access-control layer threads dead parameters through ~33 call sites</span>
+  </div>
+  <p class="desc">Post account-free refactor: <code>libraryScopeFor()</code> always returns undefined, <code>viewerSafeMediaList()</code> is an identity function, <code>mediaIsAccessible()</code> carries an unused action arg, and dead schema tables remain (<code>users</code>, <code>auth_sessions</code>, <code>user_permissions</code>, <code>devices</code>/<code>pairing_codes</code>, <code>server_setup</code>/<code>account_invites</code>, unused <code>settings</code>). Also duplicated ID-derivation logic (<code>seriesIdFor</code> vs <code>showIdFor</code>) risks drift. Unused exports linger too (<code>clearAllCache</code>, <code>describeQuality</code>, web’s <code>getMusicArtists</code>, whole <code>endpoint-selection.ts</code> module used only by its own test).</p>
+  <div class="kv">
+    <div><span class="k">Locations</span><span class="v loc">routes/api.ts:128-150 (~33 call sites) · db/migrations/index.ts · apps/web/src/api.ts:225 · features/connection/endpoint-selection.ts</span></div>
+    <div><span class="k">Fix</span><span class="v">Decide keep-vs-remove for planned auth; strip the rest with tests</span></div>
+  </div>
+</article>
+
+<!-- B-09 -->
+<article class="bug low" data-sev="low">
+  <div class="bug-head">
+    <span class="bug-id">B-09</span><span class="sev low">Low</span>
+    <span class="bug-title">Cast URL endpoint ships placeholder contract contradicting README</span>
+  </div>
+  <p class="desc">README states protected servers issue “short-lived, media-scoped playback grants automatically”, but <code>GET /api/media/:id/cast</code> returns <code>const suffix = ''</code> and <code>expiresAt: null</code> — leftover scaffolding from the grant design, now meaningless under account-free mode. No grant logic exists anywhere.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/routes/api.ts:977-989</span></div>
+    <div><span class="k">Fix</span><span class="v">Simplify response shape or update README/docs to the actual behavior</span></div>
+  </div>
+</article>
+
+<!-- B-10 -->
+<article class="bug info" data-sev="info">
+  <div class="bug-head">
+    <span class="bug-id">B-10</span><span class="sev info">Info</span>
+    <span class="bug-title">Web bundle is a single 934 kB chunk (build budget warning)</span>
+  </div>
+  <p class="desc">Vite reports the main JS chunk at 933.85 kB minified (279 kB gzip), exceeding its 500 kB advice. Player + music pages load eagerly together. Route-level dynamic imports (player, music, settings) would cut initial payload roughly in half for browsing traffic.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/web build output · src/App.tsx imports</span></div>
+    <div><span class="k">Fix</span><span class="v">Lazy-load VideoPlayer/AudioPlayer/MusicLibraryPage via React.lazy</span></div>
+  </div>
+</article>
+
+<!-- B-11 -->
+<article class="bug info" data-sev="info">
+  <div class="bug-head">
+    <span class="bug-id">B-11</span><span class="sev info">Info</span>
+    <span class="bug-title">Empty catch swallows cache-stat errors</span>
+  </div>
+  <p class="desc">Cache-status walk uses a bare <code>catch {}</code> when stat-ing entries (benign TOCTOU skip, but invisible). At minimum comment the intent or count skips for diagnostics.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/transcoder/engine.ts:555</span></div>
+  </div>
+</article>
+
+<!-- B-12 -->
+<article class="bug info" data-sev="info">
+  <div class="bug-head">
+    <span class="bug-id">B-12</span><span class="sev info">Info</span>
+    <span class="bug-title">Blocking ffmpeg probes at module-import time slow cold start</span>
+  </div>
+  <p class="desc">Importing <code>transcoder/engine.ts</code> constructs the singleton whose constructor runs multiple synchronous <code>execFileSync("ffmpeg", …)</code> hardware probes before the server accepts connections; same pattern for DB open and TMDB wiring at import. Deferring probe work to first transcode request (or <code>/health</code>-adjacent warmup) would speed container healthchecks noticeably.</p>
+  <div class="kv">
+    <div><span class="k">Location</span><span class="v loc">apps/server/src/transcoder/engine.ts (constructor) · db/index.ts · metadata/runtime.ts</span></div>
+  </div>
+</article>
+
+<!-- B-13 -->
+<article class="bug info" data-sev="info">
+  <div class="bug-head">
+    <span class="bug-id">B-13</span><span class="sev info">Info</span>
+    <span class="bug-title">SQLite variable-limit risk with very large library sets in scope clauses</span>
+  </div>
+  <p class="desc">Scope filters bind one parameter per library path into <code>NOT IN (?,…)</code>; SQLite’s historical 999-variable ceiling could reject queries for deployments with hundreds of libraries/temp-table inputs. Unlikely in practice, cheap to future-proof by chunking or joining a temp table.</p>
+  <div class="kv">
+    <div><span class="k">Locations</span><span class="v loc">apps/server/src/db/media-identity-store.ts · db/index.ts (scope clauses)</span></div>
+  </div>
+</article>
+
+</div><!-- /buglist -->
+
+<footer>Caster bug report · generated 2026-08-27 from commit 7ab9bbd · companion file: progress-report.html</footer>
+</div>
+<script>
+  const btns=document.querySelectorAll('.filters button');
+  btns.forEach(b=>b.addEventListener('click',()=>{
+    btns.forEach(x=>x.classList.remove('active'));b.classList.add('active');
+    const f=b.dataset.f;
+    document.querySelectorAll('.bug').forEach(el=>{
+      el.classList.toggle('hidden',f!=='all'&&el.dataset.sev!==f);
+    });
+  }));
+</script>
+</body>
+</html>
